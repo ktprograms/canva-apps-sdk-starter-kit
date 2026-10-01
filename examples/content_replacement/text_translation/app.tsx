@@ -1,11 +1,37 @@
+/*
+    cyrb53 (c) 2018 bryc (github.com/bryc)
+    License: Public domain (or MIT if needed). Attribution appreciated.
+    A fast and simple 53-bit string hash function with decent collision resistance.
+    Largely inspired by MurmurHash2/3, but with a focus on speed/simplicity.
+*/
+const cyrb53 = function(obj: object, seed = 0): number {
+  const str = JSON.stringify(obj);
+
+  let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
+  for (let i = 0, ch; i < str.length; i++) {
+    ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+};
+
 // For usage information, see the README.md file.
 import { Button, Box, Rows, Text, Checkbox } from "@canva/app-ui-kit";
-import { editContent, InlineFormatting } from "@canva/design";
+import { editContent, InlineFormatting, RichtextContentRange, TextRegion } from "@canva/design";
 import * as styles from "styles/components.css";
 import { convertWordsToLorem } from "./lorem_generator";
 import { Dispatch, SetStateAction, useEffect, useState } from "react";
+import { TextInput } from "node_modules/@canva/app-ui-kit/dist/cjs/ui/apps/developing/ui_kit/entry";
+
+// FIXME: Hash content to add ID to unordered array
 
 const enum Task {
+  CHECK_SPELLING,
   WITH_FORMATTING,
   WITHOUT_FORMATTING,
   MARK,
@@ -21,8 +47,8 @@ export const App = () => {
    * This implementation provides a simpler approach, making it an ideal starting point
    * for understanding the basics of text editing functionality.
    */
-  const spellcheckWithoutFormatting = async () => {
-    setInProgressTask(Task.WITHOUT_FORMATTING);
+  const checkSpelling = async () => {
+    setInProgressTask(Task.CHECK_SPELLING);
     // Start a content editing session for all richtext elements on the current page
     await editContent(
       {
@@ -31,25 +57,37 @@ export const App = () => {
       },
       async (session) => {
         // Extract plaintext from each richtext element, ignoring any formatting like bold, italic, etc.
-        const request: string[] = session.contents.map((range) => range.readPlaintext());
+        const items = prepare(session.contents);
 
-        // Simulate a translation API call (in production, this would call a real translation service)
-        const response = await spellcheck(request, setMatches);
-
-        // Apply translations to each richtext element in the design
-        session.contents.forEach((range, i) => {
-          // Get the length of the original text to know how much to replace
-          const length = range.readPlaintext().length;
-          // Replace the entire text content with the translated text
-          const spellcheckedText = response[i];
-          if (spellcheckedText) {
-            range.replaceText({ index: 0, length }, spellcheckedText);
-          }
-        });
-
-        // Commit all changes to the design - this makes the changes visible to the user
-        await session.sync();
+        setMatches(await spellcheck(items));
       },
+    );
+    setInProgressTask(undefined);
+  };
+
+  const fixWithoutFormatting = async () => {
+    setInProgressTask(Task.WITH_FORMATTING);
+    await editContent(
+      {
+        contentType: "richtext",
+        target: "current_page",
+      },
+      async (session) => {
+        const itemsMap = prepareMap(session.contents);
+
+        for (const { length, offset, replacements, textId } of matches) {
+          // FIXME: This is undefined if textId changed (edited)
+          // Prompt/do spellcheck again (can just call spellcheck here, no need checkSpelling)
+          // Make replaceText idempotent (redo this session function if spellcheck again)
+          const range = itemsMap[textId]!.range;
+
+          range.replaceText({ index: offset, length }, replacements[0]!.value);
+        }
+
+        await session.sync();
+
+        setMatches([]); // FIXME: Filter for implemented fixes (not ignored);
+      }
     );
     setInProgressTask(undefined);
   };
@@ -189,44 +227,24 @@ export const App = () => {
     setInProgressTask(undefined);
   };
 
-  const [shouldMark, setShouldMark] = useState(false);
-
   useEffect(() => {
     const interval = setInterval(async () => {
-      if (shouldMark) {
-        await mark()
+      try {
+        await checkSpelling();
+      } catch (error) {
+        console.error(error);
       }
-      // try {
-      //   await editContent(
-      //     {
-      //       contentType: "richtext",
-      //       target: "current_page",
-      //     },
-      //     async (session) => {
-      //       for (const range of session.contents) {
-      //         for (const region of range.readTextRegions()) {
-      //           console.log(region.text);
-      //         }
-      //       }
-      //       // notification.addToast({
-      //       //   messageText: session.contents.map((range) => range.readPlaintext()).join(", ") || session.contents.toString(),
-      //       // });
-      //     },
-      //   );
-      // } catch (error) {
-      //   console.error(error);
-      // }
-    }, 1000);
+    }, 60 * 1000); // FIXME: Set (keep in mind rate limit)
 
     return () => clearInterval(interval);
-  }, [shouldMark]);
+  }, []);
 
   const [matches, setMatches] = useState<LanguageToolMatches>([]);
 
   return (
     <div className={styles.scrollContainer}>
       <Rows spacing="2u">
-        <Text>
+        {/*<Text>
           This example demonstrates how apps can translate all text in the
           current page
         </Text>
@@ -237,25 +255,26 @@ export const App = () => {
           loading={inProgressTask === Task.WITH_FORMATTING}
         >
           Translate with formatting
-        </Button>
+        </Button>*/}
         <Button
           variant="secondary"
-          onClick={spellcheckWithoutFormatting}
+          onClick={checkSpelling}
           disabled={inProgressTask != null}
-          loading={inProgressTask === Task.WITHOUT_FORMATTING}
+          loading={inProgressTask === Task.CHECK_SPELLING}
         >
-          Spellcheck without formatting
-        </Button>
-        <Button
-          variant="secondary"
-          onClick={() => setShouldMark(!shouldMark)}
-          disabled={inProgressTask != null}
-          loading={inProgressTask === Task.MARK}
-        >
-          Mark randomly {String(shouldMark)}
+          Spellcheck
         </Button>
 
         <Suggestions matches={matches} />
+
+        <Button
+          variant="primary"
+          onClick={fixWithoutFormatting}
+          disabled={inProgressTask != null}
+          loading={inProgressTask === Task.WITHOUT_FORMATTING}
+        >
+          Fix (without formatting)
+        </Button>
       </Rows>
     </div>
   );
@@ -277,7 +296,9 @@ export const Suggestions = (props: { matches: LanguageToolMatches }) => (
         defaultChecked={true}
       />
     </Box>
-    {props.matches.map(({ length, offset, replacements, original }) => {
+    {props.matches.map((match) => {
+      const { replacements, original } = match;
+
       // FIXME: Range errors
       const replacement = replacements[0]!.value;
 
@@ -286,6 +307,7 @@ export const Suggestions = (props: { matches: LanguageToolMatches }) => (
           background="neutralLow"
           borderRadius="large"
           padding="1u"
+          key={cyrb53(match)}
         >
           <Checkbox
             label={
@@ -300,7 +322,7 @@ export const Suggestions = (props: { matches: LanguageToolMatches }) => (
         </Box>
       );
     })}
-  </Rows>
+  </Rows >
 );
 
 /**
@@ -317,6 +339,11 @@ async function getTranslation(text: string[][]): Promise<string[][]> {
   return text.map((t) => convertWordsToLorem(t));
 }
 
+type LanguageToolParams = {
+  text: string;
+  language: "auto" | string;
+}
+
 type LanguageToolResponse = {
   matches: {
     length: number;
@@ -328,48 +355,141 @@ type LanguageToolResponse = {
   }[];
 }
 type LanguageToolMatches = (LanguageToolResponse['matches'][0] & {
+  textId: number;
   original: string;
 
   // TODO: Add "ignored" for checkbox (optional)
 })[]
 
-type SetMatchesAction = Dispatch<SetStateAction<LanguageToolMatches>>
+type Item = {
+  id: number;
+  plaintext: string;
+  range: RichtextContentRange;
+}
+
+function prepare(contents: readonly RichtextContentRange[]): Item[] {
+  return contents.map((range) => {
+    const richtext = range.readTextRegions();
+
+    return {
+      id: cyrb53(richtext),
+      plaintext: range.readPlaintext(),
+      range,
+    };
+  });
+}
+
+type ItemMap = {
+  [id: number]: Item;
+};
+
+function itemsToMap(items: Item[]): ItemMap {
+  return items.reduce<ItemMap>((acc, item) => {
+    acc[item.id] = item;
+    return acc;
+  }, {});
+}
+
+function prepareMap(content: RichtextContentRange[]): ItemMap {
+  return itemsToMap(prepare(content));
+}
+
+// FIXME: (proj): Handle deleted ranges
+// FIXME: (proj): Handle substring OOBE
+
+type TextItem = {
+  text: string;
+  global: {
+    offset: number;
+    length: number;
+  };
+
+  id: number;
+  plaintext: string;
+
+  plaintextStart: number;
+}
 
 // FIXME: Error handling
 // TODO: Allow picking other replacements
-async function spellcheck(
-  text: string[],
-  setMatches: SetMatchesAction,
-): Promise<string[]> {
-  const t = "The quic brown fox jumps over an lazy dog";
+async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
+  const textItems = items.reduce<TextItem[]>((acc, item) => {
+    const { id, plaintext } = item;
+
+    const header = `\n\n╳${id}╳\n\n`
+
+    const text = `${header}${plaintext}`;
+    const length = text.length;
+
+    let offset = 0;
+    const last = acc.at(-1);
+    if (last) {
+      offset = last.global.offset + last.global.length;
+    }
+
+    return [...acc, {
+      text,
+      global: {
+        offset,
+        length,
+      },
+
+      id,
+      plaintext,
+
+      plaintextStart: header.length,
+    } as TextItem];
+  }, []);
+
+  const text: string = textItems.map(({ text }) => text).join("");
+
   const request = new Request("https://api.languagetool.org/v2/check", {
     method: "POST",
     body: new URLSearchParams({
-      text: t || text,
+      text: text,
       language: "auto",
-    }),
+      abtest: "gc_1_aggressive",
+      useragent: "standalone",
+    } as LanguageToolParams),
   });
 
   const data = await (await fetch(request)).text();
-  console.log(data);
   const response = JSON.parse(data) as LanguageToolResponse;
 
+  // DEBUG
+  console.debug(text, textItems);
+  console.debug(data);
   response.matches.forEach((match) => {
     const { offset, length, replacements } = match;
-    console.log(`@${offset}+${length}=${t.substring(offset, offset + length)} -> ${replacements[0]!.value}`);
+    console.debug(`@${offset}+${length}=${text.substring(offset, offset + length)} -> ${replacements[0]!.value}`);
   });
+  // END DEBUG
 
-  setMatches(response.matches.map((match) => {
-    const { offset, length } = match;
+  // NOTE: Fix spelling depends on this being reverse sorted
+  response.matches.sort(({ offset: a }, { offset: b }) => b - a);
 
-    // FIXME: Range
-    const original = (t || text).substring(offset, offset + length);
+  return response.matches.map(({ length, offset, replacements }) => {
+    const textItem = textItems.find(({ global: { offset: gOffset, length: gLength } }) => {
+      return gOffset <= offset && (gOffset + gLength) >= offset + length;
+    })!;
+
+    const { global: { offset: gOffset }, id, plaintext, plaintextStart } = textItem;
+
+    offset -= gOffset + plaintextStart;
 
     return {
-      ...match,
-      original,
+      textId: id,
+      offset,
+      length,
+      replacements,
+      original: plaintext.substring(offset, offset + length),
     }
-  }));
+  });
 
-  return Promise.resolve([""]);
+  // const result = response.matches.reduce((acc, { offset, length, replacements }) => (
+  //   acc.substring(0, offset) + replacements[0]!.value + acc.substring(offset + length)
+  // ), text);
+  // console.log(result)
+  //
+  // return Promise.resolve([result]);
 }
