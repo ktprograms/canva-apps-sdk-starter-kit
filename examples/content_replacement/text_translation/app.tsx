@@ -58,8 +58,68 @@ export const App = () => {
       async (session) => {
         // Extract plaintext from each richtext element, ignoring any formatting like bold, italic, etc.
         const items = prepare(session.contents);
+        console.log(items);
 
         setMatches(await spellcheck(items));
+
+        // const itemsMap = itemsToMap(items);
+        //
+        // for (const { length, offset, textId } of matches) {
+        //   // TEST: This shouldn't have changed from FIVE LINES AGO
+        //   const range = itemsMap[textId]!.range;
+        //
+        //   let start = range.readPlaintext().length;
+        //   range.readTextRegions().reverse().forEach((region) => {
+        //     const rLength = region.text.length;
+        //     start -= rLength;
+        //
+        //     const url = new URL("https://spellcheck.example.com");
+        //     url.hash = btoa(JSON.stringify(region.formatting));
+        //
+        //     const format: InlineFormatting = {
+        //       color: "#ff0000",
+        //       decoration: "underline",
+        //       link: url.toString(),
+        //     };
+        //
+        //     console.log(region.text, offset, length, start, rLength);
+        //
+        //     if (offset <= start && offset + length >= start + rLength) {
+        //       // Region fully contained in match
+        //       console.log('A');
+        //       range.formatText(
+        //         { index: start, length: rLength },
+        //         format,
+        //       );
+        //     } else if (offset > start && offset + length < start + rLength) {
+        //       // Region fully encloses match
+        //       console.log('B');
+        //       range.formatText(
+        //         { index: offset, length },
+        //         format,
+        //       );
+        //     } else if (offset > start && offset < rLength) {
+        //       // Region starts before match
+        //       console.log('C');
+        //       range.formatText(
+        //         { index: offset, length: (start + rLength) - (offset - start) },
+        //         format,
+        //       );
+        //     } else {
+        //       // Region ends after match
+        //       console.log('D');
+        //       range.formatText(
+        //         { index: start, length: length - (start - offset) },
+        //         format,
+        //       );
+        //     }
+        //   });
+
+        // FIXME: ids change when highlighting
+        // Update matches with new ids
+        // }
+
+        await session.sync();
       },
     );
     setInProgressTask(undefined);
@@ -390,7 +450,7 @@ function itemsToMap(items: Item[]): ItemMap {
   }, {});
 }
 
-function prepareMap(content: RichtextContentRange[]): ItemMap {
+function prepareMap(content: readonly RichtextContentRange[]): ItemMap {
   return itemsToMap(prepare(content));
 }
 
@@ -399,7 +459,7 @@ function prepareMap(content: RichtextContentRange[]): ItemMap {
 
 type TextItem = {
   text: string;
-  global: {
+  range: {
     offset: number;
     length: number;
   };
@@ -469,13 +529,13 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
   response.matches.sort(({ offset: a }, { offset: b }) => b - a);
 
   return response.matches.map(({ length, offset, replacements }) => {
-    const textItem = textItems.find(({ global: { offset: gOffset, length: gLength } }) => {
-      return gOffset <= offset && (gOffset + gLength) >= offset + length;
+    const textItem = textItems.find(({ range: { offset: rOffset, length: rLength } }) => {
+      return rOffset <= offset && (rOffset + rLength) >= offset + length;
     })!;
 
-    const { global: { offset: gOffset }, id, plaintext, plaintextStart } = textItem;
+    const { range: { offset: rOffset }, id, plaintext, plaintextStart } = textItem;
 
-    offset -= gOffset + plaintextStart;
+    offset -= rOffset + plaintextStart;
 
     return {
       textId: id,
