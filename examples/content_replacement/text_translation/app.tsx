@@ -25,8 +25,7 @@ import { Button, Box, Rows, Text, Checkbox } from "@canva/app-ui-kit";
 import { editContent, InlineFormatting, RichtextContentRange, TextRegion } from "@canva/design";
 import * as styles from "styles/components.css";
 import { convertWordsToLorem } from "./lorem_generator";
-import { Dispatch, SetStateAction, useEffect, useState } from "react";
-import { TextInput } from "node_modules/@canva/app-ui-kit/dist/cjs/ui/apps/developing/ui_kit/entry";
+import { useEffect, useState } from "react";
 
 // FIXME: Hash content to add ID to unordered array
 
@@ -62,62 +61,62 @@ export const App = () => {
 
         setMatches(await spellcheck(items));
 
-        // const itemsMap = itemsToMap(items);
-        //
-        // for (const { length, offset, textId } of matches) {
-        //   // TEST: This shouldn't have changed from FIVE LINES AGO
-        //   const range = itemsMap[textId]!.range;
-        //
-        //   let start = range.readPlaintext().length;
-        //   range.readTextRegions().reverse().forEach((region) => {
-        //     const rLength = region.text.length;
-        //     start -= rLength;
-        //
-        //     const url = new URL("https://spellcheck.example.com");
-        //     url.hash = btoa(JSON.stringify(region.formatting));
-        //
-        //     const format: InlineFormatting = {
-        //       color: "#ff0000",
-        //       decoration: "underline",
-        //       link: url.toString(),
-        //     };
-        //
-        //     console.log(region.text, offset, length, start, rLength);
-        //
-        //     if (offset <= start && offset + length >= start + rLength) {
-        //       // Region fully contained in match
-        //       console.log('A');
-        //       range.formatText(
-        //         { index: start, length: rLength },
-        //         format,
-        //       );
-        //     } else if (offset > start && offset + length < start + rLength) {
-        //       // Region fully encloses match
-        //       console.log('B');
-        //       range.formatText(
-        //         { index: offset, length },
-        //         format,
-        //       );
-        //     } else if (offset > start && offset < rLength) {
-        //       // Region starts before match
-        //       console.log('C');
-        //       range.formatText(
-        //         { index: offset, length: (start + rLength) - (offset - start) },
-        //         format,
-        //       );
-        //     } else {
-        //       // Region ends after match
-        //       console.log('D');
-        //       range.formatText(
-        //         { index: start, length: length - (start - offset) },
-        //         format,
-        //       );
-        //     }
-        //   });
+        const itemsMap = itemsToMap(items);
 
-        // FIXME: ids change when highlighting
-        // Update matches with new ids
-        // }
+        for (const { length, offset, textId } of matches) {
+          // TEST: This shouldn't have changed from FIVE LINES AGO
+          const range = itemsMap[textId]!.range;
+
+          let start = range.readPlaintext().length;
+          range.readTextRegions().reverse().forEach((region) => {
+            const rLength = region.text.length;
+            start -= rLength;
+
+            const url = new URL("https://spellcheck.example.com");
+            url.hash = btoa(JSON.stringify(region.formatting));
+
+            const format: InlineFormatting = {
+              color: "#ff0000",
+              decoration: "underline",
+              link: url.toString(),
+            };
+
+            console.log(region.text, offset, length, start, rLength);
+
+            if (offset <= start && offset + length >= start + rLength) {
+              // Region fully contained in match
+              console.log('A');
+              range.formatText(
+                { index: start, length: rLength },
+                format,
+              );
+            } else if (offset > start && offset + length < start + rLength) {
+              // Region fully encloses match
+              console.log('B');
+              range.formatText(
+                { index: offset, length },
+                format,
+              );
+            } else if (offset > start && offset < rLength) {
+              // Region starts before match
+              console.log('C');
+              range.formatText(
+                { index: offset, length: (start + rLength) - (offset - start) },
+                format,
+              );
+            } else {
+              // Region ends after match
+              console.log('D');
+              range.formatText(
+                { index: start, length: length - (start - offset) },
+                format,
+              );
+            }
+          });
+
+          // FIXME: ids change when highlighting
+          // Update matches with new ids
+        }
 
         await session.sync();
       },
@@ -476,7 +475,7 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
   const textItems = items.reduce<TextItem[]>((acc, item) => {
     const { id, plaintext } = item;
 
-    const header = `\n\n╳${id}╳\n\n`
+    const header = `\n${id}\n\n`
 
     const text = `${header}${plaintext}`;
     const length = text.length;
@@ -484,12 +483,12 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
     let offset = 0;
     const last = acc.at(-1);
     if (last) {
-      offset = last.global.offset + last.global.length;
+      offset = last.range.offset + last.range.length;
     }
 
     return [...acc, {
       text,
-      global: {
+      range: {
         offset,
         length,
       },
@@ -508,8 +507,16 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
     body: new URLSearchParams({
       text: text,
       language: "auto",
-      abtest: "gc_1_aggressive",
+      enableHiddenRules: true,
+      level: "picky",
+      noopLanguages: "en",
+      preferredVariants: "en-US,de-DE,pt-BR,ca-es",
+      abtest: "deggec,esggec,ptggec,qb,gc_1_aggressive,de_gc_1_aggressive,fr_gc_1_aggressive,pt_gc_1_aggressive,nl_gc_1_aggressive,es_gc_1_aggressive",
+      preferredLanguages: "en",
+      disabledRules: "WHITESPACE_RULE",
       useragent: "standalone",
+      mode: "allButTextLevelOnly",
+      allowIncompleteResults: true,
     } as LanguageToolParams),
   });
 
@@ -528,10 +535,17 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
   // NOTE: Fix spelling depends on this being reverse sorted
   response.matches.sort(({ offset: a }, { offset: b }) => b - a);
 
-  return response.matches.map(({ length, offset, replacements }) => {
+  const result = response.matches.map(({ length, offset, replacements }) => {
+    // console.log(textItems, replacements[0]!.value, offset, length);
     const textItem = textItems.find(({ range: { offset: rOffset, length: rLength } }) => {
       return rOffset <= offset && (rOffset + rLength) >= offset + length;
     })!;
+
+    // console.log(textItem);
+    if (!textItem) {
+      return {
+      };
+    }
 
     const { range: { offset: rOffset }, id, plaintext, plaintextStart } = textItem;
 
@@ -543,8 +557,11 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
       length,
       replacements,
       original: plaintext.substring(offset, offset + length),
-    }
+    };
   });
+
+  // console.log(result);
+  return result;
 
   // const result = response.matches.reduce((acc, { offset, length, replacements }) => (
   //   acc.substring(0, offset) + replacements[0]!.value + acc.substring(offset + length)
