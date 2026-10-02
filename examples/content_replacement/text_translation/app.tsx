@@ -57,9 +57,9 @@ export const App = () => {
       async (session) => {
         // Extract plaintext from each richtext element, ignoring any formatting like bold, italic, etc.
         const items = prepare(session.contents);
-        console.log(items);
 
-        setMatches(await spellcheck(items));
+        const matches = await spellcheck(items);
+        setMatches(matches);
 
         const itemsMap = itemsToMap(items);
 
@@ -97,14 +97,14 @@ export const App = () => {
                 { index: offset, length },
                 format,
               );
-            } else if (offset > start && offset < rLength) {
+            } else if (offset > start && offset < start + rLength) {
               // Region starts before match
               console.log('C');
               range.formatText(
-                { index: offset, length: (start + rLength) - (offset - start) },
+                { index: offset, length: rLength - (offset - start) },
                 format,
               );
-            } else {
+            } else if (offset + length < start + rLength && offset + length > start) {
               // Region ends after match
               console.log('D');
               range.formatText(
@@ -114,8 +114,10 @@ export const App = () => {
             }
           });
 
-          // FIXME: ids change when highlighting
-          // Update matches with new ids
+          // NOTE: ids change when highlighting
+          // Fix spelling removes the highlighting, returning the ID back to original
+          // FIXME: Not if a one of many errors are selected to fix within a range, and the range isn't fully returned to original
+          // In that case, update IDs and then the unhighlight step can be in the same sync
         }
 
         await session.sync();
@@ -124,13 +126,64 @@ export const App = () => {
     setInProgressTask(undefined);
   };
 
-  const fixWithoutFormatting = async () => {
-    setInProgressTask(Task.WITH_FORMATTING);
+  // NOTE: Doesn't remove results; shouldn't use this app
+  const clearFormatting = async () => {
     await editContent(
       {
         contentType: "richtext",
         target: "current_page",
       },
+      async (session) => {
+        session.contents.forEach((range) => {
+          let endOfRegion = range.readPlaintext().length;
+
+          range.readTextRegions().reverse().forEach((region) => {
+
+            endOfRegion = endOfRegion - region.text.length;
+
+            const rLink = region.formatting?.link;
+            if (rLink) {
+              try {
+                const { color, fontWeight, fontStyle, decoration, strikethrough, link } = JSON.parse(atob(new URL(rLink).hash.substring(1))) as InlineFormatting;
+
+                range.formatText(
+                  {
+                    index: endOfRegion,
+                    length: region.text.length,
+                  },
+                  {
+                    color,
+                    fontWeight,
+                    fontStyle,
+                    decoration,
+                    strikethrough,
+                    link,
+                  },
+                );
+              } catch { }
+            }
+          });
+        });
+
+        await session.sync();
+      }
+    );
+  };
+
+  const clearResults = async () => {
+    await clearFormatting();
+    setMatches([]);
+  };
+
+  const fixWithExtendStartFormatting = async () => {
+    setInProgressTask(Task.WITH_FORMATTING);
+    await clearFormatting();
+    await editContent(
+      {
+        contentType: "richtext",
+        target: "current_page",
+      },
+      // FIXME: Zero length start (e.g. when adding period)
       async (session) => {
         const itemsMap = prepareMap(session.contents);
 
@@ -289,7 +342,8 @@ export const App = () => {
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
-        await checkSpelling();
+        // TODO: Enable
+        // await checkSpelling();
       } catch (error) {
         console.error(error);
       }
@@ -324,15 +378,23 @@ export const App = () => {
           Spellcheck
         </Button>
 
+        <Button
+          variant="secondary"
+          onClick={clearResults}
+          disabled={inProgressTask != null}
+        >
+          Clear results
+        </Button>
+
         <Suggestions matches={matches} />
 
         <Button
           variant="primary"
-          onClick={fixWithoutFormatting}
+          onClick={fixWithExtendStartFormatting}
           disabled={inProgressTask != null}
           loading={inProgressTask === Task.WITHOUT_FORMATTING}
         >
-          Fix (without formatting)
+          Fix
         </Button>
       </Rows>
     </div>
@@ -431,7 +493,7 @@ function prepare(contents: readonly RichtextContentRange[]): Item[] {
     const richtext = range.readTextRegions();
 
     return {
-      id: cyrb53(richtext),
+      id: cyrb53(richtext), // FIXME: Same text+formatting leads to same (if from Duplicate)
       plaintext: range.readPlaintext(),
       range,
     };
@@ -455,6 +517,7 @@ function prepareMap(content: readonly RichtextContentRange[]): ItemMap {
 
 // FIXME: (proj): Handle deleted ranges
 // FIXME: (proj): Handle substring OOBE
+// FIXME: (proj): Lists (and not creating list in multiline text)
 
 type TextItem = {
   text: string;
@@ -543,8 +606,9 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
 
     // console.log(textItem);
     if (!textItem) {
+      // FIXME:
       return {
-      };
+      } as LanguageToolMatches[0];
     }
 
     const { range: { offset: rOffset }, id, plaintext, plaintextStart } = textItem;
