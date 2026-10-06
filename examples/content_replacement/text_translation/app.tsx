@@ -177,6 +177,11 @@ export const App = () => {
     );
   };
 
+  const clearResults = async () => {
+    await clearFormatting();
+    setMatches([]);
+  };
+
   const fixWithExtendStartFormatting = async () => {
     setInProgressTask(Task.WITH_FORMATTING);
     await clearFormatting();
@@ -321,14 +326,26 @@ export const App = () => {
             : <Suggestions matches={matches} />
         )}
 
-        <Button
-          variant="primary"
-          onClick={fixWithExtendStartFormatting}
-          disabled={inProgressTask != null || matches.length == 0}
-          loading={inProgressTask === Task.WITHOUT_FORMATTING}
-        >
-          Fix
-        </Button>
+        <Rows spacing="1u">
+          <Button
+            variant="primary"
+            onClick={fixWithExtendStartFormatting}
+            disabled={inProgressTask != null || matches.length == 0}
+            loading={inProgressTask === Task.WITHOUT_FORMATTING}
+          >
+            Fix
+          </Button>
+
+          {matches.length > 0 && (
+            <Button
+              variant="secondary"
+              onClick={clearResults}
+              disabled={inProgressTask != null}
+            >
+              Clear results
+            </Button>
+          )}
+        </Rows>
       </Rows>
     </div>
   );
@@ -395,6 +412,8 @@ async function getTranslation(text: string[][]): Promise<string[][]> {
 type LanguageToolParams = {
   text: string;
   language: "auto" | string;
+
+  [key: string]: any;
 }
 
 type LanguageToolResponse = {
@@ -452,8 +471,6 @@ function prepareMap(content: readonly RichtextContentRange[]): ItemMap {
   return itemsToMap(prepare(content));
 }
 
-// FIXME: (proj): Handle substring OOBE
-// FIXME: (proj): No replacement available
 // FIXME: (proj): Lists (and not creating list in multiline text)
 // FIXME: (proj): Top level error handling
 // NOTE: (proj): Can check HIDDEN rules (check LT premium for example and API response) and implement when found
@@ -504,48 +521,63 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
   }, []);
 
   const text: string = textItems.map(({ text }) => text).join("");
+  const baseParams: LanguageToolParams = {
+    text,
+    language: "auto",
+    enableHiddenRules: true,
+    level: "picky",
+    noopLanguages: "en",
+    preferredVariants: "en-US,de-DE,pt-BR,ca-es", // FIXME: Locale
+    abtest: "deggec,esggec,ptggec,qb,gc_1_aggressive,de_gc_1_aggressive,fr_gc_1_aggressive,pt_gc_1_aggressive,nl_gc_1_aggressive,es_gc_1_aggressive",
+    preferredLanguages: "en",
+    disabledRules: "WHITESPACE_RULE",
+    useragent: "standalone",
+  }
 
-  const request = new Request("https://api.languagetool.org/v2/check", {
+  let matches: LanguageToolResponse["matches"] = []
+
+  const abtloRequest = new Request("https://api.languagetool.org/v2/check", {
     method: "POST",
     body: new URLSearchParams({
-      text,
-      language: "auto",
-      enableHiddenRules: true,
-      level: "picky",
-      noopLanguages: "en",
-      preferredVariants: "en-US,de-DE,pt-BR,ca-es", // FIXME: Locale
-      abtest: "deggec,esggec,ptggec,qb,gc_1_aggressive,de_gc_1_aggressive,fr_gc_1_aggressive,pt_gc_1_aggressive,nl_gc_1_aggressive,es_gc_1_aggressive",
-      preferredLanguages: "en",
-      disabledRules: "WHITESPACE_RULE",
-      useragent: "standalone",
-      // FIXME: Also run textLevelOnly and combine
+      ...baseParams,
       mode: "allButTextLevelOnly",
       allowIncompleteResults: true,
     } as LanguageToolParams),
   });
+  const abtloData = await (await fetch(abtloRequest)).text();
+  const abtloResponse = JSON.parse(abtloData) as LanguageToolResponse;
+  matches.push(...abtloResponse.matches);
 
-  // FIXME: <token regexp="yes">important|significant</token>
-  // NOTE: QB (AI-based) rules for en-US on languagetool.org
+  const tloRequest = new Request("https://api.languagetool.org/v2/check", {
+    method: "POST",
+    body: new URLSearchParams({
+      ...baseParams,
+      mode: "textLevelOnly",
+    } as LanguageToolParams),
+  });
+  const tloData = await (await fetch(tloRequest)).text();
+  const tloResponse = JSON.parse(tloData) as LanguageToolResponse;
+  matches.push(...tloResponse.matches);
 
-  const data = await (await fetch(request)).text();
-  const response = JSON.parse(data) as LanguageToolResponse;
+  // FIXME: (lt): <token regexp="yes">important|significant</token>
+  // NOTE: (lt):QB (AI-based) rules for en-US on languagetool.org
 
-  // FIXME:
-  response.matches = response.matches.filter(({ type: { typeName: type }, replacements }) => type !== "Hint" && replacements.length > 0);
+  // FIXME: If no replacement, still show but don't attempt to fix?
+  matches = matches.filter(({ type: { typeName: type }, replacements }) => type !== "Hint" && replacements.length > 0);
 
   // DEBUG
   console.debug(text, textItems);
-  console.debug(data);
-  response.matches.forEach((match) => {
+  console.debug(abtloData, tloData);
+  matches.forEach((match) => {
     const { offset, length, replacements, type: { typeName: type } } = match;
     console.debug(`${type}@${offset}+${length}=${text.substring(offset, offset + length)} -> ${replacements[0]!.value}`);
   });
   // END DEBUG
 
   // NOTE: Fix spelling depends on this being reverse sorted
-  response.matches.sort(({ offset: a }, { offset: b }) => b - a);
+  matches.sort(({ offset: a }, { offset: b }) => b - a);
 
-  return response.matches.flatMap(({ length, offset, type, replacements }) => {
+  return matches.flatMap(({ length, offset, type, replacements }) => {
     const textItem = textItems.find(({ range: { offset: rOffset, length: rLength } }) => {
       return rOffset <= offset && (rOffset + rLength) >= offset + length;
     })!;
