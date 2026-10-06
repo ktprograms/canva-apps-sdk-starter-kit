@@ -6,7 +6,9 @@ const AUTO_CHECK_INTERVAL = 30 * 1000; // 30 seconds
     A fast and simple 53-bit string hash function with decent collision resistance.
     Largely inspired by MurmurHash2/3, but with a focus on speed/simplicity.
 */
-const cyrb53 = function(obj: object, seed = 0): number {
+// Object key order may change across JSON.stringify calls.
+// When consistency is required, use a stable method such as string formatting.
+const cyrb53 = function(obj: any, seed = 0): number {
   const str = JSON.stringify(obj);
 
   let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
@@ -26,7 +28,7 @@ const cyrb53 = function(obj: object, seed = 0): number {
 import { Button, Box, Rows, Text, Checkbox, Alert, EyeIcon } from "@canva/app-ui-kit";
 import { editContent, InlineFormatting, RichtextContentRange, RichtextContentSession } from "@canva/design";
 import * as styles from "styles/components.css";
-import { Dispatch, useEffect, useState } from "react";
+import { Dispatch, SetStateAction, useEffect, useState } from "react";
 
 const enum Task {
   CHECK_SPELLING,
@@ -51,11 +53,18 @@ export const App = () => {
 
     const itemsMap = itemsToMap(items);
 
-    for (const { length, offset, textId } of matches) {
+    for (const match of matches) {
+      if (disabledMatches.has(ignoreID(matchAsIgnore(match)))) {
+        continue;
+      }
+
+      const { length, offset, textId } = match;
+
       // TEST: This shouldn't have changed from FIVE LINES AGO
       const range = itemsMap[textId]!.range;
 
       let start = range.readPlaintext().length;
+      // PERF: Can stop after passing the match
       range.readTextRegions().reverse().forEach((region) => {
         const rLength = region.text.length;
         start -= rLength;
@@ -98,8 +107,7 @@ export const App = () => {
 
       // NOTE: ids change when highlighting
       // Fix spelling removes the highlighting, returning the ID back to original
-      // FIXME: Not if a one of many errors are selected to fix within a range, and the range isn't fully returned to original
-      // In that case, update IDs and then the unhighlight step can be in the same sync
+      // Check is run after every Fix (with no highlighting), so matches are always valid and not stale
     }
 
     await session.sync();
@@ -209,7 +217,9 @@ export const App = () => {
             return;
           }
 
-          for (const { length, offset, replacements, textId } of matches) {
+          const enabledMatches = matches.filter((match) => !disabledMatches.has(ignoreID(matchAsIgnore(match))));
+
+          for (const { length, offset, replacements, textId } of enabledMatches) {
             const range = itemsMap[textId]!.range;
 
             range.replaceText({ index: offset, length }, replacements[0]!.value);
@@ -217,7 +227,7 @@ export const App = () => {
 
           await session.sync();
 
-          setMatches([]); // FIXME: Filter for fixes to implement (not ignored);
+          setMatches([]);
           setOutdated(false);
 
           // Run spellcheck again to find any errors previously missed
@@ -231,7 +241,7 @@ export const App = () => {
   };
 
   // FIXME: Uses prepareMap with highlighted results IDs but match has original ID
-  const focusOnMatch = async (focusedMatch: LanguageToolMatches[0]) => {
+  const focusOnMatch = async (focusedMatch: LanguageToolMatch) => {
     try {
       setInProgressTask(Task.FOCUS_MATCH);
       await editContent(
@@ -276,8 +286,7 @@ export const App = () => {
   const [matches, setMatches] = useState<LanguageToolMatches>([]);
   const [outdated, setOutdated] = useState(false);
 
-  const [focusedMatch, setFocusedMatch] = useState<LanguageToolMatches[0] | undefined>();
-
+  const [focusedMatch, setFocusedMatch] = useState<LanguageToolMatch>();
   useEffect(() => {
     (async () => {
       if (focusedMatch) {
@@ -286,6 +295,13 @@ export const App = () => {
     })();
   }, [focusedMatch])
   // FIXME: Clear focused match (UI and also on new check spelling)
+
+  // Matches disabled by menu item, for context+original+replacements triplet permanently
+  // FIXME: possibility for overlap, but have to balance with keeping matches disabled when surrounding text/formatting changes
+  // FIXME: Won't work if it's near the start of a sentence and context includes textId
+  // FIXME: In general won't work with overlapping context, will change and won't be disabled
+  // TODO: Store in localStorage
+  const [disabledMatches, setDisabledMatches] = useState(new Map<number, MatchIgnore>());
 
   return (
     <div className={styles.scrollContainer}>
@@ -307,7 +323,15 @@ export const App = () => {
         {hasChecked && (
           matches.length == 0 && inProgressTask == null
             ? <Alert tone="positive">No mistakes found!</Alert>
-            : <Suggestions matches={matches} setFocusedMatch={setFocusedMatch} inProgressTask={inProgressTask} />
+            : (
+              <Suggestions
+                matches={matches}
+                setFocusedMatch={setFocusedMatch}
+                inProgressTask={inProgressTask}
+                disabledMatches={disabledMatches}
+                setDisabledMatches={setDisabledMatches}
+              />
+            )
         )}
 
         <Rows spacing="1u">
@@ -337,46 +361,71 @@ export const App = () => {
 
 export const Suggestions = (props: {
   matches: LanguageToolMatches;
-  setFocusedMatch: Dispatch<LanguageToolMatches[0] | undefined>;
+
+  setFocusedMatch: Dispatch<LanguageToolMatch | undefined>;
   inProgressTask: Task | undefined;
+
+  disabledMatches: Map<number, MatchIgnore>,
+  setDisabledMatches: Dispatch<SetStateAction<Map<number, MatchIgnore>>>;
 }) => (
   <Rows spacing="1u">
     <Text variant="bold">
       Suggestions ({props.matches.length})
     </Text>
-    <Box
-      background="neutralLow"
-      borderRadius="large"
-      padding="1u"
-    >
-      <Checkbox
-        label="Select all"
-        defaultChecked={true}
-      />
-    </Box>
+    {/* <Box */}
+    {/*   background="neutralLow" */}
+    {/*   borderRadius="large" */}
+    {/*   padding="1u" */}
+    {/* > */}
+    {/*   <Checkbox */}
+    {/*     label="Select all" */}
+    {/*     defaultChecked={true} */}
+    {/*   /> */}
+    {/* </Box> */}
     {props.matches.map((match) => {
       const { textId, replacements, original } = match;
 
       const replacement = replacements[0]!.value;
+
+      const id = ignoreID(matchAsIgnore(match));
+      const checked = !props.disabledMatches.has(id);
 
       return (
         <Box
           background="neutralLow"
           borderRadius="large"
           padding="1u"
-          key={textId}
+          key={`${textId}${id}`}
         >
           <Box display="inline-flex" alignItems="center" justifyContent="spaceBetween" width="full">
-            <Checkbox
-              label={
-                <Text>
-                  <span style={{ color: "red", fontWeight: "bold" }}>{original}</span>
-                  <span> ➙ </span>
-                  <span style={{ color: "green" }}>{replacement}</span>
-                </Text>
-              }
-              defaultChecked={true}
-            />
+            <Box width="full">
+              <Checkbox
+                label={
+                  <Text>
+                    <span style={{ ...(!checked) && { textDecoration: "line-through" } }}>
+                      <span style={{ color: "red", fontWeight: "bold" }}>{original}</span>
+                      <span> ➙ </span>
+                      <span style={{ color: "green" }}>{replacement}</span>
+                    </span>
+                  </Text>
+                }
+                checked={checked}
+                onChange={(_, checked) => {
+                  const matchIgnore = matchAsIgnore(match);
+                  const id = ignoreID(matchIgnore);
+
+                  props.setDisabledMatches((prev) => {
+                    if (!checked) {
+                      prev.set(id, matchIgnore);
+                    } else {
+                      prev.delete(id);
+                    }
+
+                    return new Map(prev);
+                  });
+                }}
+              />
+            </Box>
 
             <Button
               icon={EyeIcon}
@@ -397,7 +446,7 @@ type LanguageToolParams = {
   language: "auto" | string;
 
   [key: string]: any;
-}
+};
 
 type LanguageToolResponse = {
   matches: {
@@ -412,14 +461,30 @@ type LanguageToolResponse = {
     replacements: {
       value: string;
     }[];
+
+    context: {
+      length: number;
+      offset: number;
+      text: string;
+    };
   }[];
-}
-type LanguageToolMatches = (LanguageToolResponse['matches'][0] & {
+};
+type LanguageToolMatch = (LanguageToolResponse['matches'][0] & {
   textId: number;
   original: string;
+});
+type LanguageToolMatches = LanguageToolMatch[];
 
-  // TODO: Add "ignored" for checkbox (optional)
-})[]
+type MatchIgnore = Pick<LanguageToolMatch, 'context' | 'original' | 'replacements'>
+
+function matchAsIgnore(match: LanguageToolMatch): MatchIgnore {
+  const { context, original, replacements } = match;
+  return { context, original, replacements };
+}
+function ignoreID(matchIgnore: MatchIgnore): number {
+  const { context: { length, offset, text }, original, replacements } = matchIgnore;
+  return cyrb53(`${text}@${offset}+${length}=${original} -> ${replacements.map((r) => r.value).join()}`);
+}
 
 type Item = {
   id: number;
@@ -454,7 +519,7 @@ function prepareMap(content: readonly RichtextContentRange[]): ItemMap {
   return itemsToMap(prepare(content));
 }
 
-// FIXME: (proj): Ignore and keep ignored based on context+original+replacement (e.g. on résumé page 2)
+// FIXME: (proj): Ignore and keep ignored based on context+original+replacements (e.g. on résumé page 2)
 // NOTE: (proj): QB messes up Lists (and not creating list in multiline text), should be fine with self-hosted or other locale
 // NOTE: (proj): Can check HIDDEN rules (check LT premium for example and API response) and implement when found
 
@@ -544,7 +609,7 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
   matches.push(...tloResponse.matches);
 
   // FIXME: (lt): <token regexp="yes">important|significant</token>
-  // NOTE: (lt):QB (AI-based) rules for en-US on languagetool.org
+  // NOTE: (lt): QB (AI-based) rules for en-US on languagetool.org
   // FIXME: (lt): 2022 - Present en-dash
 
   // FIXME: If no replacement, still show but don't attempt to fix?
@@ -554,7 +619,7 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
   console.debug(text, textItems);
   console.debug(abtloData, tloData);
   matches.forEach((match) => {
-    const { offset, length, replacements, type: { typeName: type } } = match;
+    const { offset, length, type: { typeName: type }, replacements } = match;
     console.debug(`${type}@${offset}+${length}=${text.substring(offset, offset + length)} -> ${replacements[0]!.value}`);
   });
   // END DEBUG
@@ -562,7 +627,7 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
   // Fix spelling depends on this being reverse sorted
   matches.sort(({ offset: a }, { offset: b }) => b - a);
 
-  return matches.flatMap(({ length, offset, type, replacements }) => {
+  return matches.flatMap(({ length, offset, type, replacements, context }) => {
     const textItem = textItems.find(({ range: { offset: rOffset, length: rLength } }) => {
       return rOffset <= offset && (rOffset + rLength) >= offset + length;
     })!;
@@ -585,6 +650,7 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
       offset,
       type,
       replacements,
+      context,
       original: plaintext.substring(offset, offset + length),
     }];
   });
