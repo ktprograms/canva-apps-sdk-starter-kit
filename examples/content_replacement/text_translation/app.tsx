@@ -1,3 +1,5 @@
+const AUTO_CHECK_INTERVAL = 30 * 1000; // 30 seconds
+
 /*
     cyrb53 (c) 2018 bryc (github.com/bryc)
     License: Public domain (or MIT if needed). Attribution appreciated.
@@ -24,7 +26,6 @@ const cyrb53 = function(obj: object, seed = 0): number {
 import { Button, Box, Rows, Text, Checkbox, Alert } from "@canva/app-ui-kit";
 import { editContent, InlineFormatting, RichtextContentRange, RichtextContentSession } from "@canva/design";
 import * as styles from "styles/components.css";
-import { convertWordsToLorem } from "./lorem_generator";
 import { useEffect, useState } from "react";
 
 const enum Task {
@@ -106,20 +107,24 @@ export const App = () => {
   };
 
   const checkSpelling = async () => {
-    // Ensure running check multiple times preserves original style
-    await clearFormatting();
+    try {
+      // Ensure running check multiple times preserves original style
+      await clearFormatting();
 
-    // Start a content editing session for all richtext elements on the current page
-    await editContent(
-      {
-        contentType: "richtext",
-        target: "current_page",
-      },
-      async (session) => {
-        await checkSpellingInner(session);
-      },
-    );
-    setHasChecked(true);
+      // Start a content editing session for all richtext elements on the current page
+      await editContent(
+        {
+          contentType: "richtext",
+          target: "current_page",
+        },
+        async (session) => {
+          await checkSpellingInner(session);
+        },
+      );
+      setHasChecked(true);
+    } catch (error) {
+      console.error(error);
+    }
   };
 
   const clearFormatting = async () => {
@@ -176,55 +181,58 @@ export const App = () => {
   };
 
   const clearResults = async () => {
-    await clearFormatting();
-    setMatches([]);
+    try {
+      await clearFormatting();
+      setHasChecked(false);
+      setMatches([]);
+    } catch (error) {
+      console.error(error);
+    }
   };
 
   const fixWithExtendStartFormatting = async () => {
-    setInProgressTask(Task.FIX);
-    await clearFormatting();
-    await editContent(
-      {
-        contentType: "richtext",
-        target: "current_page",
-      },
-      async (session) => {
-        const itemsMap = prepareMap(session.contents);
+    try {
+      setInProgressTask(Task.FIX);
+      await clearFormatting();
+      await editContent(
+        {
+          contentType: "richtext",
+          target: "current_page",
+        },
+        async (session) => {
+          const itemsMap = prepareMap(session.contents);
 
-        if (matches.filter(({ textId }) => itemsMap[textId] !== undefined).length !== matches.length) {
-          setOutdated(true);
+          if (matches.filter(({ textId }) => itemsMap[textId] !== undefined).length !== matches.length) {
+            setOutdated(true);
+            await checkSpellingInner(session);
+            return;
+          }
+
+          for (const { length, offset, replacements, textId } of matches) {
+            const range = itemsMap[textId]!.range;
+
+            range.replaceText({ index: offset, length }, replacements[0]!.value);
+          }
+
+          await session.sync();
+
+          setMatches([]); // FIXME: Filter for fixes to implement (not ignored);
+          setOutdated(false);
+
+          // Run spellcheck again to find any errors previously missed
           await checkSpellingInner(session);
-          return;
         }
-
-        for (const { length, offset, replacements, textId } of matches) {
-          const range = itemsMap[textId]!.range;
-
-          range.replaceText({ index: offset, length }, replacements[0]!.value);
-        }
-
-        await session.sync();
-
-        setMatches([]); // FIXME: Filter for fixes to implement (not ignored);
-        setOutdated(false);
-
-        // Run spellcheck again to find any errors previously missed
-        // TEST: See whether needed once the text/allbuttext calls are added
-        await checkSpellingInner(session);
-      }
-    );
-    setInProgressTask(undefined);
+      );
+      setInProgressTask(undefined);
+    } catch (error) {
+      console.error(error);
+    }
   };
 
   useEffect(() => {
     const interval = setInterval(async () => {
-      try {
-        // TODO: Enable
-        // await checkSpelling();
-      } catch (error) {
-        console.error(error);
-      }
-    }, 60 * 1000); // FIXME: Set (keep in mind rate limit)
+      await checkSpelling();
+    }, AUTO_CHECK_INTERVAL);
 
     return () => clearInterval(interval);
   }, []);
@@ -285,7 +293,6 @@ export const App = () => {
 export const Suggestions = (props: { matches: LanguageToolMatches }) => (
   <Rows spacing="1u">
     <Text variant="bold">
-      {/* TODO: https://formatjs.github.io/docs/react-intl/components/#formattedplural */}
       Suggestions ({props.matches.length})
     </Text>
     <Box
@@ -325,20 +332,6 @@ export const Suggestions = (props: { matches: LanguageToolMatches }) => (
     })}
   </Rows >
 );
-
-/**
- * Mock function that simulates calling an external translation API.
- * In a production app, this would make HTTP requests to services like Google Translate,
- * AWS Translate, or Azure Translator Text.
- * @param text Array of text chunks to translate, grouped by richtext element
- * @returns Promise resolving to translated text chunks in the same structure
- */
-async function getTranslation(text: string[][]): Promise<string[][]> {
-  // Simulate network delay that would occur with a real translation API
-  await new Promise((res) => setTimeout(res, 500));
-  // Convert to lorem ipsum as a placeholder for actual translation
-  return text.map((t) => convertWordsToLorem(t));
-}
 
 type LanguageToolParams = {
   text: string;
@@ -402,8 +395,8 @@ function prepareMap(content: readonly RichtextContentRange[]): ItemMap {
   return itemsToMap(prepare(content));
 }
 
-// FIXME: (proj): Lists (and not creating list in multiline text)
-// FIXME: (proj): Top level error handling
+// FIXME: (proj): Ignore and keep ignored based on context+original+replacement (e.g. on résumé page 2)
+// NOTE: (proj): QB messes up Lists (and not creating list in multiline text), should be fine with self-hosted or other locale
 // NOTE: (proj): Can check HIDDEN rules (check LT premium for example and API response) and implement when found
 
 // FIXME: (lt): Many adjectives read as nouns (e.g. brilliant) https://github.com/languagetool-org/languagetool/blob/72b75d98aef09185b727a9a82cbcf9d934017ef7/languagetool-language-modules/en/src/main/resources/org/languagetool/resource/en/disambiguation.xml#L2850 DT_JJNN_IN_NN being taken wrongly?
@@ -452,13 +445,14 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
   }, []);
 
   const text: string = textItems.map(({ text }) => text).join("");
+  const preferredVariants = navigator.languages.filter((locale) => new Intl.Locale(locale).region !== undefined).join();
   const baseParams: LanguageToolParams = {
     text,
     language: "auto",
     enableHiddenRules: true,
     level: "picky",
     noopLanguages: "en",
-    preferredVariants: "en-US,de-DE,pt-BR,ca-es", // FIXME: Locale
+    ...(preferredVariants !== "") && { preferredVariants },
     abtest: "deggec,esggec,ptggec,qb,gc_1_aggressive,de_gc_1_aggressive,fr_gc_1_aggressive,pt_gc_1_aggressive,nl_gc_1_aggressive,es_gc_1_aggressive",
     preferredLanguages: "en",
     disabledRules: "WHITESPACE_RULE",
@@ -492,6 +486,7 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
 
   // FIXME: (lt): <token regexp="yes">important|significant</token>
   // NOTE: (lt):QB (AI-based) rules for en-US on languagetool.org
+  // FIXME: (lt): 2022 - Present en-dash
 
   // FIXME: If no replacement, still show but don't attempt to fix?
   matches = matches.filter(({ type: { typeName: type }, replacements }) => type !== "Hint" && replacements.length > 0);
@@ -505,7 +500,7 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
   });
   // END DEBUG
 
-  // NOTE: Fix spelling depends on this being reverse sorted
+  // Fix spelling depends on this being reverse sorted
   matches.sort(({ offset: a }, { offset: b }) => b - a);
 
   return matches.flatMap(({ length, offset, type, replacements }) => {
