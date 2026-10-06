@@ -29,9 +29,7 @@ import { useEffect, useState } from "react";
 
 const enum Task {
   CHECK_SPELLING,
-  WITH_FORMATTING,
-  WITHOUT_FORMATTING,
-  MARK,
+  FIX,
 }
 
 export const App = () => {
@@ -183,7 +181,7 @@ export const App = () => {
   };
 
   const fixWithExtendStartFormatting = async () => {
-    setInProgressTask(Task.WITH_FORMATTING);
+    setInProgressTask(Task.FIX);
     await clearFormatting();
     await editContent(
       {
@@ -218,62 +216,6 @@ export const App = () => {
     setInProgressTask(undefined);
   };
 
-  /**
-   * Translates the text in the page while respecting inline formatting.
-   * If this looks too complicated, look to the `translateWithoutFormatting` method above to help learn the basics.
-   */
-  const translateWithFormatting = async () => {
-    setInProgressTask(Task.WITH_FORMATTING);
-    // Start a content editing session for all richtext elements on the current page
-    await editContent(
-      {
-        contentType: "richtext",
-        target: "current_page",
-      },
-      async (session) => {
-        // Extract text regions which preserve formatting boundaries (bold, italic, etc.)
-        const request = session.contents.map((range) =>
-          range.readTextRegions().map((region) => region.text),
-        );
-
-        // Simulate a translation API call (in production, this would call a real translation service)
-        const response = await getTranslation(request);
-
-        // Apply translations to each richtext element while preserving formatting
-        session.contents.forEach((range, index) => {
-          // Get the translated regions corresponding to this text element
-          const translatedRegions = response[index];
-          // Track position from the end of the text to avoid index recalculation during replacement
-          let endOfRegion = range.readPlaintext().length;
-          // Get all text regions with their formatting information
-          const regionsToTranslate = range.readTextRegions();
-          // Process regions in reverse order to avoid position shifts affecting subsequent replacements
-          regionsToTranslate.reverse().forEach((region, i) => {
-            // Calculate the start position of the current region
-            endOfRegion = endOfRegion - region.text.length;
-            // Replace the current region (starting at the end of the previous region with length equal to the length of the text in the region)
-            // with the translated text.
-            const translatedText =
-              translatedRegions?.[regionsToTranslate.length - 1 - i];
-            if (translatedText) {
-              range.replaceText(
-                {
-                  index: endOfRegion,
-                  length: region.text.length,
-                },
-                translatedText,
-              );
-            }
-          });
-        });
-
-        // Commit all changes to the design - this makes the changes visible to the user
-        await session.sync();
-      },
-    );
-    setInProgressTask(undefined);
-  };
-
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
@@ -299,18 +241,7 @@ export const App = () => {
           Content has changed since the last spellcheck.
           Please review the new results and press "Fix" again.
         </Alert>}
-        {/*<Text>
-          This example demonstrates how apps can translate all text in the
-          current page
-        </Text>
-        <Button
-          variant="secondary"
-          onClick={translateWithFormatting}
-          disabled={inProgressTask != null}
-          loading={inProgressTask === Task.WITH_FORMATTING}
-        >
-          Translate with formatting
-        </Button>*/}
+
         <Button
           variant="secondary"
           onClick={checkSpelling}
@@ -331,7 +262,7 @@ export const App = () => {
             variant="primary"
             onClick={fixWithExtendStartFormatting}
             disabled={inProgressTask != null || matches.length == 0}
-            loading={inProgressTask === Task.WITHOUT_FORMATTING}
+            loading={inProgressTask === Task.FIX}
           >
             Fix
           </Button>
