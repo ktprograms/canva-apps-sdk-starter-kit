@@ -23,14 +23,15 @@ const cyrb53 = function(obj: object, seed = 0): number {
 };
 
 // For usage information, see the README.md file.
-import { Button, Box, Rows, Text, Checkbox, Alert } from "@canva/app-ui-kit";
+import { Button, Box, Rows, Text, Checkbox, Alert, EyeIcon } from "@canva/app-ui-kit";
 import { editContent, InlineFormatting, RichtextContentRange, RichtextContentSession } from "@canva/design";
 import * as styles from "styles/components.css";
-import { useEffect, useState } from "react";
+import { Dispatch, useEffect, useState } from "react";
 
 const enum Task {
   CHECK_SPELLING,
   FIX,
+  FOCUS_MATCH,
 }
 
 export const App = () => {
@@ -229,6 +230,39 @@ export const App = () => {
     }
   };
 
+  // FIXME: Uses prepareMap with highlighted results IDs but match has original ID
+  const focusOnMatch = async (focusedMatch: LanguageToolMatches[0]) => {
+    try {
+      setInProgressTask(Task.FOCUS_MATCH);
+      await editContent(
+        {
+          contentType: "richtext",
+          target: "current_page",
+        },
+        async (session) => {
+          const itemsMap = prepareMap(session.contents);
+
+          const item = itemsMap[focusedMatch.textId];
+          if (!item) {
+            return;
+          }
+
+          const range = item.range;
+
+          range.formatText(
+            { index: focusedMatch.offset, length: focusedMatch.length },
+            { color: '#663399' },
+          );
+
+          await session.sync();
+        },
+      );
+      setInProgressTask(undefined);
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
   useEffect(() => {
     const interval = setInterval(async () => {
       await checkSpelling();
@@ -241,6 +275,17 @@ export const App = () => {
 
   const [matches, setMatches] = useState<LanguageToolMatches>([]);
   const [outdated, setOutdated] = useState(false);
+
+  const [focusedMatch, setFocusedMatch] = useState<LanguageToolMatches[0] | undefined>();
+
+  useEffect(() => {
+    (async () => {
+      if (focusedMatch) {
+        await focusOnMatch(focusedMatch);
+      }
+    })();
+  }, [focusedMatch])
+  // FIXME: Clear focused match (UI and also on new check spelling)
 
   return (
     <div className={styles.scrollContainer}>
@@ -262,7 +307,7 @@ export const App = () => {
         {hasChecked && (
           matches.length == 0 && inProgressTask == null
             ? <Alert tone="positive">No mistakes found!</Alert>
-            : <Suggestions matches={matches} />
+            : <Suggestions matches={matches} setFocusedMatch={setFocusedMatch} inProgressTask={inProgressTask} />
         )}
 
         <Rows spacing="1u">
@@ -290,7 +335,11 @@ export const App = () => {
   );
 };
 
-export const Suggestions = (props: { matches: LanguageToolMatches }) => (
+export const Suggestions = (props: {
+  matches: LanguageToolMatches;
+  setFocusedMatch: Dispatch<LanguageToolMatches[0] | undefined>;
+  inProgressTask: Task | undefined;
+}) => (
   <Rows spacing="1u">
     <Text variant="bold">
       Suggestions ({props.matches.length})
@@ -317,16 +366,26 @@ export const Suggestions = (props: { matches: LanguageToolMatches }) => (
           padding="1u"
           key={textId}
         >
-          <Checkbox
-            label={
-              <Text>
-                <span style={{ color: "red", fontWeight: "bold" }}>{original}</span>
-                <span> ➙ </span>
-                <span style={{ color: "green" }}>{replacement}</span>
-              </Text>
-            }
-            defaultChecked={true}
-          />
+          <Box display="inline-flex" alignItems="center" justifyContent="spaceBetween" width="full">
+            <Checkbox
+              label={
+                <Text>
+                  <span style={{ color: "red", fontWeight: "bold" }}>{original}</span>
+                  <span> ➙ </span>
+                  <span style={{ color: "green" }}>{replacement}</span>
+                </Text>
+              }
+              defaultChecked={true}
+            />
+
+            <Button
+              icon={EyeIcon}
+              size="small"
+              variant="tertiary"
+              onClick={() => props.setFocusedMatch(match)}
+              disabled={props.inProgressTask != null}
+            />
+          </Box>
         </Box>
       );
     })}
