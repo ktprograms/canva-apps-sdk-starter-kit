@@ -312,8 +312,7 @@ export const App = () => {
           disabled={inProgressTask != null}
           loading={inProgressTask === Task.CHECK_SPELLING}
         >
-          {/* NOTE: And grammar */}
-          Check spelling
+          Check
         </Button>
 
         {hasChecked && (
@@ -352,9 +351,8 @@ export const Suggestions = (props: { matches: LanguageToolMatches }) => (
       />
     </Box>
     {props.matches.map((match) => {
-      const { replacements, original } = match;
+      const { textId, replacements, original } = match;
 
-      // FIXME: Range errors
       const replacement = replacements[0]!.value;
 
       return (
@@ -362,7 +360,7 @@ export const Suggestions = (props: { matches: LanguageToolMatches }) => (
           background="neutralLow"
           borderRadius="large"
           padding="1u"
-          key={cyrb53(match)}
+          key={textId}
         >
           <Checkbox
             label={
@@ -454,11 +452,10 @@ function prepareMap(content: readonly RichtextContentRange[]): ItemMap {
   return itemsToMap(prepare(content));
 }
 
-// FIXME: (proj): Handle deleted ranges
 // FIXME: (proj): Handle substring OOBE
-// FIXME: (proj): Lists (and not creating list in multiline text)
 // FIXME: (proj): No replacement available
-// FIXME (proj): Top level error handling
+// FIXME: (proj): Lists (and not creating list in multiline text)
+// FIXME: (proj): Top level error handling
 // NOTE: (proj): Can check HIDDEN rules (check LT premium for example and API response) and implement when found
 
 // FIXME: (lt): Many adjectives read as nouns (e.g. brilliant) https://github.com/languagetool-org/languagetool/blob/72b75d98aef09185b727a9a82cbcf9d934017ef7/languagetool-language-modules/en/src/main/resources/org/languagetool/resource/en/disambiguation.xml#L2850 DT_JJNN_IN_NN being taken wrongly?
@@ -476,7 +473,6 @@ type TextItem = {
   plaintextStart: number;
 }
 
-// FIXME: Error handling
 // TODO: Allow picking other replacements
 async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
   const textItems = items.reduce<TextItem[]>((acc, item) => {
@@ -555,7 +551,6 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
     })!;
 
     if (!textItem) {
-      // FIXME:
       return [];
     }
 
@@ -576,11 +571,4 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
       original: plaintext.substring(offset, offset + length),
     }];
   });
-
-  // const result = response.matches.reduce((acc, { offset, length, replacements }) => (
-  //   acc.substring(0, offset) + replacements[0]!.value + acc.substring(offset + length)
-  // ), text);
-  // console.log(result)
-  //
-  // return Promise.resolve([result]);
 }
