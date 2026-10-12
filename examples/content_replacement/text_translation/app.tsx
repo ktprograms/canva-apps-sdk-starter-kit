@@ -1,6 +1,8 @@
 const AUTO_CHECK_INTERVAL = 30 * 1000; // 30 seconds
+const LINK_BASE = "https://example.com";
 const ERROR_COLOUR = "#ff0000";
-const FOCUS_COLOUR = "#663399";
+const HINT_COLOUR = "#ffa500";
+const FOCUS_COLOUR = "#999900";
 
 /*
     cyrb53 (c) 2018 bryc (github.com/bryc)
@@ -28,7 +30,7 @@ const cyrb53 = function(obj: any, seed = 0): number {
 
 // For usage information, see the README.md file.
 import { Button, Box, Rows, Text, Checkbox, Alert, EyeIcon } from "@canva/app-ui-kit";
-import { editContent, InlineFormatting, RichtextContentRange, RichtextContentSession } from "@canva/design";
+import { editContent, InlineFormatting, RichtextContentRange, RichtextContentSession, TextRegion } from "@canva/design";
 import * as styles from "styles/components.css";
 import { Dispatch, SetStateAction, useEffect, useState } from "react";
 
@@ -36,6 +38,7 @@ const enum Task {
   CHECK_SPELLING,
   FIX,
   FOCUS_MATCH,
+  UPDATE_HIGHLIGHT,
 }
 
 export const App = () => {
@@ -52,25 +55,37 @@ export const App = () => {
 
     const [matches, disabled] = await spellcheck(items);
     setMatches(matches);
-    setDisabledMatches((prev) => {
-      disabled.forEach((matchIgnore) => {
-        const id = ignoreID(matchIgnore);
-        prev.set(id, matchIgnore);
-      });
-      return prev;
-    });
 
+    const newDisabledMatches = new Set([...disabledMatches, ...disabled]);
+    setDisabledMatches(newDisabledMatches);
+
+    highlightMatches(items, matches, newDisabledMatches);
+
+    await session.sync();
+
+    setInProgressTask(undefined);
+  };
+
+  // Call from inside an `editContent`, and run sync after
+  const highlightMatches = (items: Item[], matches: LanguageToolMatches, disabled: Set<number>) => {
     const itemsMap = itemsToMap(items);
 
+    // ids change when highlighting
+    // Fix spelling removes the highlighting, returning the ID back to original
+    // Check is run after every Fix (with no highlighting), so matches are always valid and not stale
     for (const match of matches) {
-      if (disabledMatches.has(ignoreID(matchAsIgnore(match)))) {
+      if (disabled.has(ignoreID(match))) {
         continue;
       }
 
       const { length, offset, textId } = match;
 
-      // TEST: This shouldn't have changed from FIVE LINES AGO
-      const range = itemsMap.get(textId)!.range;
+      const item = itemsMap.get(textId);
+      if (!item) {
+        continue;
+      }
+
+      const range = item.range;
 
       let start = range.readPlaintext().length;
       // PERF: Can stop after passing the match
@@ -78,7 +93,7 @@ export const App = () => {
         const rLength = region.text.length;
         start -= rLength;
 
-        const url = new URL("https://spellcheck.example.com");
+        const url = new URL(LINK_BASE);
         url.hash = btoa(JSON.stringify(region.formatting));
 
         const format: InlineFormatting = {
@@ -87,43 +102,109 @@ export const App = () => {
           link: url.toString(),
         };
 
-        if (offset <= start && offset + length >= start + rLength) {
-          // Region fully contained in match
-          range.formatText(
-            { index: start, length: rLength },
-            format,
-          );
-        } else if (offset > start && offset + length < start + rLength) {
-          // Region fully encloses match
-          range.formatText(
-            { index: offset, length },
-            format,
-          );
-        } else if (offset > start && offset < start + rLength) {
-          // Region starts before match
-          range.formatText(
-            { index: offset, length: rLength - (offset - start) },
-            format,
-          );
-        } else if (offset + length < start + rLength && offset + length > start) {
-          // Region ends after match
-          range.formatText(
-            { index: start, length: length - (start - offset) },
-            format,
-          );
-        }
+        formatRegion(range, length, offset, rLength, start, format);
       });
-
-      // NOTE: ids change when highlighting
-      // Fix spelling removes the highlighting, returning the ID back to original
-      // Check is run after every Fix (with no highlighting), so matches are always valid and not stale
     }
 
     setModifiedRangeIDs(new Map(Array.from(itemsMap, ([id, item]) => [id, cyrb53(item.range.readTextRegions())])));
+  };
 
-    await session.sync();
+  const formatRegion = (range: RichtextContentRange, length: number, offset: number, rLength: number, start: number, format: InlineFormatting) => {
+    if (offset <= start && offset + length >= start + rLength) {
+      // Region fully contained in match
+      range.formatText(
+        { index: start, length: rLength },
+        format,
+      );
+    } else if (offset > start && offset + length < start + rLength) {
+      // Region fully encloses match
+      range.formatText(
+        { index: offset, length },
+        format,
+      );
+    } else if (offset > start && offset < start + rLength) {
+      // Region starts before match
+      range.formatText(
+        { index: offset, length: rLength - (offset - start) },
+        format,
+      );
+    } else if (offset + length < start + rLength && offset + length > start) {
+      // Region ends after match
+      range.formatText(
+        { index: start, length: length - (start - offset) },
+        format,
+      );
+    }
+  };
 
-    setInProgressTask(undefined);
+  // NOTE: Occasionally loses sync with actual state,
+  // but in those cases Fix also doesn't work
+  // Which re-checks and syncs modified IDs.
+  const updateHighlightSingleMatch = async (match: LanguageToolMatch, highlight: boolean) => {
+    try {
+      setInProgressTask(Task.UPDATE_HIGHLIGHT);
+      await editContent(
+        {
+          contentType: "richtext",
+          target: "current_page",
+        },
+        async (session) => {
+          const itemsMap = prepareMap(session.contents);
+
+          const { length, offset, textId } = match;
+
+          let newID = modifiedRangeIDs.get(textId);
+          if (!newID) {
+            return;
+          }
+          const item = itemsMap.get(newID);
+          if (!item) {
+            return;
+          }
+
+          const range = item.range;
+
+          let start = range.readPlaintext().length;
+          // PERF: Can stop after passing the match
+          range.readTextRegions().reverse().forEach((region) => {
+            const rLength = region.text.length;
+            start -= rLength;
+
+            if (highlight) {
+              const url = new URL(LINK_BASE);
+              url.hash = btoa(JSON.stringify(region.formatting));
+
+              const format: InlineFormatting = {
+                color: ERROR_COLOUR,
+                decoration: "underline",
+                link: url.toString(),
+              };
+
+              formatRegion(range, length, offset, rLength, start, format);
+            } else {
+              // FIXME: Need to treat individually
+              const values = preservationLinkValues(region);
+              if (values) {
+                range.formatText(
+                  {
+                    index: offset,
+                    length,
+                  },
+                  values.formatting,
+                );
+              }
+            }
+          });
+
+          await session.sync();
+
+          setModifiedRangeIDs(modifiedRangeIDs.set(textId, cyrb53(range.readTextRegions())));
+        },
+      );
+      setInProgressTask(undefined);
+    } catch (error) {
+      console.error(error);
+    }
   };
 
   const checkSpelling = async () => {
@@ -160,36 +241,15 @@ export const App = () => {
           range.readTextRegions().reverse().forEach((region) => {
             endOfRegion = endOfRegion - region.text.length;
 
-            const rLink = region.formatting?.link;
-            if (rLink) {
-              try {
-                const { color, fontWeight, fontStyle, decoration, strikethrough, link } = JSON.parse(atob(new URL(rLink).hash.substring(1))) as InlineFormatting;
-
-                // Make sure not to run format on other URLs which happen to match the format
-                if (
-                  color !== undefined &&
-                  fontWeight !== undefined &&
-                  fontStyle !== undefined &&
-                  decoration !== undefined &&
-                  strikethrough !== undefined &&
-                  link !== undefined
-                ) {
-                  range.formatText(
-                    {
-                      index: endOfRegion,
-                      length: region.text.length,
-                    },
-                    {
-                      color,
-                      fontWeight,
-                      fontStyle,
-                      decoration,
-                      strikethrough,
-                      link,
-                    },
-                  );
-                }
-              } catch { }
+            const values = preservationLinkValues(region);
+            if (values) {
+              range.formatText(
+                {
+                  index: endOfRegion,
+                  length: region.text.length,
+                },
+                values.formatting,
+              );
             }
           });
         });
@@ -202,8 +262,6 @@ export const App = () => {
   const clearResults = async () => {
     try {
       await clearFormatting();
-      setFocusedMatch(undefined);
-      setDisabledMatches(new Map);
       setHasChecked(false);
       setMatches([]);
     } catch (error) {
@@ -229,13 +287,16 @@ export const App = () => {
             return;
           }
 
-          const enabledMatches = matches.filter((match) => !disabledMatches.has(ignoreID(matchAsIgnore(match))));
+          const enabledMatches = matches.filter((match) => !disabledMatches.has(ignoreID(match)));
 
           for (const { length, offset, replacements, textId } of enabledMatches) {
-            const range = itemsMap.get(textId)!.range;
+            const item = itemsMap.get(textId);
+            if (!item) {
+              continue;
+            }
 
             if (hasReplacment(replacements)) {
-              range.replaceText({ index: offset, length }, replacements[0].value);
+              item.range.replaceText({ index: offset, length }, replacements[0].value);
             }
           }
 
@@ -261,38 +322,27 @@ export const App = () => {
       range.readTextRegions().reverse().forEach((region) => {
         endOfRegion = endOfRegion - region.text.length;
 
-        const rLink = region.formatting?.link;
-        if (region.formatting?.color === FOCUS_COLOUR && rLink) {
-          try {
-            const { color, fontWeight, fontStyle, decoration, strikethrough, link } = JSON.parse(atob(new URL(rLink).hash.substring(1))) as InlineFormatting;
-
-            // Make sure not to run format on other URLs which happen to match the format
-            if (
-              color !== undefined &&
-              fontWeight !== undefined &&
-              fontStyle !== undefined &&
-              decoration !== undefined &&
-              strikethrough !== undefined &&
-              link !== undefined
-            ) {
-              range.formatText(
-                {
-                  index: endOfRegion,
-                  length: region.text.length,
-                },
-                {
-                  color: ERROR_COLOUR,
-                },
-              );
-            }
-          } catch { }
+        if (region.formatting?.color === FOCUS_COLOUR) {
+          // Either return to original (if ignored/disabled), or to highlighted match
+          const values = preservationLinkValues(region);
+          if (values) {
+            range.formatText(
+              {
+                index: endOfRegion,
+                length: region.text.length,
+              },
+              values.wasPlain ? values.formatting : {
+                color: ERROR_COLOUR,
+              },
+            );
+          }
         }
       });
     });
   };
 
   // When focusedMatch is undefined, this function clears the focused highlighting
-  const focusOnMatch = async (focusedMatch: LanguageToolMatch | undefined) => {
+  const focusOnMatch = async (focusedMatch?: LanguageToolMatch) => {
     try {
       setInProgressTask(Task.FOCUS_MATCH);
       await editContent(
@@ -306,7 +356,9 @@ export const App = () => {
           if (focusedMatch) {
             const itemsMap = prepareMap(session.contents);
 
-            const newID = modifiedRangeIDs.get(focusedMatch.textId);
+            const { length, offset, textId } = focusedMatch;
+
+            const newID = modifiedRangeIDs.get(textId);
             if (!newID) {
               return;
             }
@@ -317,10 +369,32 @@ export const App = () => {
 
             const range = item.range;
 
-            range.formatText(
-              { index: focusedMatch.offset, length: focusedMatch.length },
-              { color: FOCUS_COLOUR },
-            );
+            let start = range.readPlaintext().length;
+            // PERF: Can stop after passing the match
+            range.readTextRegions().reverse().forEach((region) => {
+              const rLength = region.text.length;
+              start -= rLength;
+
+              // Only used if not highlighted (plain)
+              const url = new URL(LINK_BASE);
+              url.hash = btoa(JSON.stringify({
+                ...region.formatting,
+                wasPlain: true,
+              }));
+              const format: InlineFormatting = preservationLinkValues(region) ? {
+                // If region is already highlighted, just change colour
+                color: FOCUS_COLOUR,
+              } : {
+                // Otherwise add highlighting
+                color: FOCUS_COLOUR,
+                decoration: "underline",
+                link: url.toString(),
+              };
+
+              formatRegion(range, length, offset, rLength, start, format);
+            });
+
+            setModifiedRangeIDs(modifiedRangeIDs.set(textId, cyrb53(range.readTextRegions())));
           }
 
           await session.sync();
@@ -334,7 +408,9 @@ export const App = () => {
 
   useEffect(() => {
     const interval = setInterval(async () => {
-      await checkSpelling();
+      if (inProgressTask === null) {
+        await checkSpelling();
+      }
     }, AUTO_CHECK_INTERVAL);
 
     return () => clearInterval(interval);
@@ -353,14 +429,9 @@ export const App = () => {
     })();
   }, [focusedMatch])
 
-  // Matches disabled by menu item, for context+original+replacements triplet permanently
-  // TEST: On résumé page 2
-  // TODO: Try using original+replacement(s)+length+rule_id_subid
-  // FIXME: possibility for overlap, but have to balance with keeping matches disabled when surrounding text/formatting changes
-  // FIXME: Won't work if it's near the start of a sentence and context includes textId
-  // FIXME: In general won't work with overlapping context, will change and won't be disabled
+  // Matches disabled by menu item, identified by some set of keys in the match (see ignoreID for details)
   // TODO: Store in localStorage
-  const [disabledMatches, setDisabledMatches] = useState(new Map<number, MatchIgnore>);
+  const [disabledMatches, setDisabledMatches] = useState(new Set<number>);
 
   return (
     <div className={styles.scrollContainer}>
@@ -390,6 +461,7 @@ export const App = () => {
                 inProgressTask={inProgressTask}
                 disabledMatches={disabledMatches}
                 setDisabledMatches={setDisabledMatches}
+                updateHighlightSingleMatch={updateHighlightSingleMatch}
               />
             )
         )}
@@ -422,12 +494,14 @@ export const App = () => {
 export const Suggestions = (props: {
   matches: LanguageToolMatches;
 
-  focusedMatch: LanguageToolMatch | undefined;
+  focusedMatch?: LanguageToolMatch;
   setFocusedMatch: Dispatch<LanguageToolMatch | undefined>;
-  inProgressTask: Task | undefined;
+  inProgressTask?: Task;
 
-  disabledMatches: Map<number, MatchIgnore>,
-  setDisabledMatches: Dispatch<SetStateAction<Map<number, MatchIgnore>>>;
+  disabledMatches: Set<number>,
+  setDisabledMatches: Dispatch<SetStateAction<Set<number>>>;
+
+  updateHighlightSingleMatch: (match: LanguageToolMatch, highlight: boolean) => Promise<void>;
 }) => (
   <Rows spacing="1u">
     <Text variant="bold">
@@ -445,12 +519,14 @@ export const Suggestions = (props: {
     {/* </Box> */}
     {props.matches.map((match) => (
       <Suggestion
+        key={`${match.textId}${ignoreID(match)}`}
         match={match}
         focusedMatch={props.focusedMatch}
         setFocusedMatch={props.setFocusedMatch}
         inProgressTask={props.inProgressTask}
         disabledMatches={props.disabledMatches}
         setDisabledMatches={props.setDisabledMatches}
+        updateHighlightSingleMatch={props.updateHighlightSingleMatch}
       />
     ))}
   </Rows >
@@ -459,26 +535,26 @@ export const Suggestions = (props: {
 export const Suggestion = (props: {
   match: LanguageToolMatch;
 
-  focusedMatch: LanguageToolMatch | undefined;
+  focusedMatch?: LanguageToolMatch;
   setFocusedMatch: Dispatch<LanguageToolMatch | undefined>;
-  inProgressTask: Task | undefined;
+  inProgressTask?: Task;
 
-  disabledMatches: Map<number, MatchIgnore>,
-  setDisabledMatches: Dispatch<SetStateAction<Map<number, MatchIgnore>>>;
+  disabledMatches: Set<number>,
+  setDisabledMatches: Dispatch<SetStateAction<Set<number>>>;
+
+  updateHighlightSingleMatch: (match: LanguageToolMatch, highlight: boolean) => Promise<void>;
 }) => {
   // const [expanded, setExpanded] = useState(false);
 
-  const { textId, replacements, original } = props.match;
+  const { replacements, original, type: { typeName } } = props.match;
 
-  const id = ignoreID(matchAsIgnore(props.match));
-  const checked = !props.disabledMatches.has(id);
+  const checked = !props.disabledMatches.has(ignoreID(props.match));
 
   return (
     <Box
       background="neutralLow"
       borderRadius="large"
       padding="1u"
-      key={`${textId}${id}`}
     >
       <Box display="inline-flex" alignItems="center" justifyContent="spaceBetween" width="full">
         <Box width="full">
@@ -486,7 +562,7 @@ export const Suggestion = (props: {
             label={
               <Text>
                 <span style={{ ...(!checked) && { textDecoration: "line-through" } }}>
-                  <span style={{ color: "red", fontWeight: "bold" }}>{original}</span>
+                  <span style={{ color: typeName === "Hint" ? HINT_COLOUR : ERROR_COLOUR, fontWeight: "bold" }}>{original}</span>
                   {hasReplacment(replacements) && <>
                     <span> ➙ </span>
                     <span style={{ color: "green" }}>{replacements[0].value}</span>
@@ -496,19 +572,20 @@ export const Suggestion = (props: {
             }
             checked={checked}
             disabled={!hasReplacment(replacements)}
-            onChange={(_, checked) => {
-              const matchIgnore = matchAsIgnore(props.match);
-              const id = ignoreID(matchIgnore);
+            onChange={async (_, checked) => {
+              const id = ignoreID(props.match);
 
               props.setDisabledMatches((prev) => {
                 if (!checked) {
-                  prev.set(id, matchIgnore);
+                  prev.add(id);
                 } else {
                   prev.delete(id);
                 }
 
-                return new Map(prev);
+                return new Set(prev);
               });
+
+              await props.updateHighlightSingleMatch(props.match, checked);
             }}
           />
         </Box>
@@ -566,6 +643,11 @@ type LanguageToolResponseMatches = {
     offset: number;
     text: string;
   };
+
+  rule: {
+    id: string;
+    subId?: string;
+  };
 }[]
 type LanguageToolResponse = {
   matches: LanguageToolResponseMatches;
@@ -577,15 +659,17 @@ type LanguageToolMatch = (LanguageToolResponseMatches[0] & {
 });
 type LanguageToolMatches = LanguageToolMatch[];
 
-type MatchIgnore = Pick<LanguageToolMatch, 'context' | 'original' | 'replacements'>
-
-function matchAsIgnore(match: LanguageToolMatch): MatchIgnore {
-  const { context, original, replacements } = match;
-  return { context, original, replacements };
-}
-function ignoreID(matchIgnore: MatchIgnore): number {
+function ignoreID(match: LanguageToolMatch): number {
+  /** Old ID generation method
+   * possibility for overlap, but have to balance with keeping matches disabled when surrounding text/formatting changes
+   * Won't work if it's near the start of a sentence and context includes textId
+   * In general won't work with overlapping context, will change and won't be disabled
   const { context: { length, offset, text }, original, replacements } = matchIgnore;
   return cyrb53(`${text}@${offset}+${length}=${original} -> ${replacements.map((r) => r.value).join()}`);
+  */
+
+  const { original, replacements, length, rule: { id, subId } } = match;
+  return cyrb53(`${id}${subId || ""}: ${original}[${length}] -> ${replacements.map((r) => r.value).join()}`);
 }
 
 type Item = {
@@ -596,10 +680,8 @@ type Item = {
 
 function prepare(contents: readonly RichtextContentRange[]): Item[] {
   return contents.map((range) => {
-    const richtext = range.readTextRegions();
-
     return {
-      id: cyrb53(richtext), // FIXME: Same text+formatting leads to same (if from Duplicate)
+      id: cyrb53(range.readTextRegions()), // FIXME: Same text+formatting leads to same (if from Duplicate)
       plaintext: range.readPlaintext(),
       range,
     };
@@ -640,7 +722,7 @@ type TextItem = {
 }
 
 // TODO: Allow picking other replacements
-async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, MatchIgnore[]]> {
+async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, Set<number>]> {
   const textItems = items.reduce<TextItem[]>((acc, item) => {
     const { id, plaintext } = item;
 
@@ -723,7 +805,7 @@ async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, MatchIgn
   // Fix spelling depends on this being reverse sorted
   matches.sort(({ offset: a }, { offset: b }) => b - a);
 
-  const fullMatches: LanguageToolMatches = matches.flatMap(({ length, offset, type, replacements, context }) => {
+  const fullMatches: LanguageToolMatches = matches.flatMap(({ length, offset, type, replacements, context, rule }) => {
     const textItem = textItems.find(({ range: { offset: rOffset, length: rLength } }) => {
       return rOffset <= offset && (rOffset + rLength) >= offset + length;
     })!;
@@ -747,15 +829,15 @@ async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, MatchIgn
       type,
       replacements,
       context,
+      rule,
       original: plaintext.substring(offset, offset + length),
     }];
   });
 
-  // FIXME: Implement
-  // Disabled matches need to not be coloured immediately,
-  // and focusing on them should add proper style preservation
-  const disabled: MatchIgnore[] = []; //fullMatches.filter(({ type: { typeName: type } }) => type === "Hint").map(matchAsIgnore);
-  return [fullMatches.filter(({ type: { typeName: type } }) => type !== "Hint"), disabled];
+  // FIXME: Add "enabledHints" to counteract auto disabled
+  // TODO: Add to dictionary (either localStorage or shared account storage)
+  const disabled: Set<number> = new Set(fullMatches.filter(({ type: { typeName: type } }) => type === "Hint").map(ignoreID));
+  return [fullMatches, disabled];
 }
 
 function digitsMisspelled(text: string): LanguageToolResponseMatches {
@@ -780,7 +862,10 @@ function digitsMisspelled(text: string): LanguageToolResponseMatches {
           length,
           offset,
           text,
-        }
+        },
+        rule: {
+          id: "__CUSTOM_NUMBERS_SPELLING_ERROR__",
+        },
       });
     }
   }
@@ -793,4 +878,31 @@ function digitsMisspelled(text: string): LanguageToolResponseMatches {
   */
 function hasReplacment(replacements: LanguageToolMatch['replacements']): replacements is [LanguageToolMatch['replacements'][0], ...LanguageToolMatch['replacements']] {
   return replacements.length > 0;
+}
+
+function preservationLinkValues(region: TextRegion): { formatting: InlineFormatting, wasPlain: boolean } | undefined {
+  if (region.formatting?.link) {
+    try {
+      const {
+        color, fontWeight, fontStyle, decoration, strikethrough, link, wasPlain
+      } = JSON.parse(atob(new URL(region.formatting.link).hash.substring(1))) as InlineFormatting & { wasPlain?: boolean };
+
+      // Make sure not to run format on other URLs which happen to match the format
+      if (
+        color !== undefined &&
+        fontWeight !== undefined &&
+        fontStyle !== undefined &&
+        decoration !== undefined &&
+        strikethrough !== undefined &&
+        link !== undefined
+      ) {
+        return {
+          formatting: { color, fontWeight, fontStyle, decoration, strikethrough, link },
+          wasPlain: wasPlain || false,
+        };
+      }
+    } catch { }
+  }
+
+  return;
 }
