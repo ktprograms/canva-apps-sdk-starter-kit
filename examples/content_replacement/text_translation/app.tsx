@@ -1,4 +1,6 @@
 const AUTO_CHECK_INTERVAL = 30 * 1000; // 30 seconds
+const ERROR_COLOUR = "#ff0000";
+const FOCUS_COLOUR = "#663399";
 
 /*
     cyrb53 (c) 2018 bryc (github.com/bryc)
@@ -48,8 +50,15 @@ export const App = () => {
     // Extract plaintext from each richtext element, ignoring any formatting like bold, italic, etc.
     const items = prepare(session.contents);
 
-    const matches = await spellcheck(items);
+    const [matches, disabled] = await spellcheck(items);
     setMatches(matches);
+    setDisabledMatches((prev) => {
+      disabled.forEach((matchIgnore) => {
+        const id = ignoreID(matchIgnore);
+        prev.set(id, matchIgnore);
+      });
+      return prev;
+    });
 
     const itemsMap = itemsToMap(items);
 
@@ -61,7 +70,7 @@ export const App = () => {
       const { length, offset, textId } = match;
 
       // TEST: This shouldn't have changed from FIVE LINES AGO
-      const range = itemsMap[textId]!.range;
+      const range = itemsMap.get(textId)!.range;
 
       let start = range.readPlaintext().length;
       // PERF: Can stop after passing the match
@@ -73,7 +82,7 @@ export const App = () => {
         url.hash = btoa(JSON.stringify(region.formatting));
 
         const format: InlineFormatting = {
-          color: "#ff0000",
+          color: ERROR_COLOUR,
           decoration: "underline",
           link: url.toString(),
         };
@@ -110,6 +119,8 @@ export const App = () => {
       // Check is run after every Fix (with no highlighting), so matches are always valid and not stale
     }
 
+    setModifiedRangeIDs(new Map(Array.from(itemsMap, ([id, item]) => [id, cyrb53(item.range.readTextRegions())])));
+
     await session.sync();
 
     setInProgressTask(undefined);
@@ -118,7 +129,7 @@ export const App = () => {
   const checkSpelling = async () => {
     try {
       // Ensure running check multiple times preserves original style
-      await clearFormatting();
+      await clearResults();
 
       // Start a content editing session for all richtext elements on the current page
       await editContent(
@@ -147,7 +158,6 @@ export const App = () => {
           let endOfRegion = range.readPlaintext().length;
 
           range.readTextRegions().reverse().forEach((region) => {
-
             endOfRegion = endOfRegion - region.text.length;
 
             const rLink = region.formatting?.link;
@@ -192,6 +202,8 @@ export const App = () => {
   const clearResults = async () => {
     try {
       await clearFormatting();
+      setFocusedMatch(undefined);
+      setDisabledMatches(new Map);
       setHasChecked(false);
       setMatches([]);
     } catch (error) {
@@ -211,7 +223,7 @@ export const App = () => {
         async (session) => {
           const itemsMap = prepareMap(session.contents);
 
-          if (matches.filter(({ textId }) => itemsMap[textId] !== undefined).length !== matches.length) {
+          if (matches.filter(({ textId }) => itemsMap.get(textId) !== undefined).length !== matches.length) {
             setOutdated(true);
             await checkSpellingInner(session);
             return;
@@ -220,9 +232,11 @@ export const App = () => {
           const enabledMatches = matches.filter((match) => !disabledMatches.has(ignoreID(matchAsIgnore(match))));
 
           for (const { length, offset, replacements, textId } of enabledMatches) {
-            const range = itemsMap[textId]!.range;
+            const range = itemsMap.get(textId)!.range;
 
-            range.replaceText({ index: offset, length }, replacements[0]!.value);
+            if (hasReplacment(replacements)) {
+              range.replaceText({ index: offset, length }, replacements[0].value);
+            }
           }
 
           await session.sync();
@@ -240,8 +254,45 @@ export const App = () => {
     }
   };
 
-  // FIXME: Uses prepareMap with highlighted results IDs but match has original ID
-  const focusOnMatch = async (focusedMatch: LanguageToolMatch) => {
+  const clearFocusedMatch = (session: RichtextContentSession) => {
+    session.contents.forEach((range) => {
+      let endOfRegion = range.readPlaintext().length;
+
+      range.readTextRegions().reverse().forEach((region) => {
+        endOfRegion = endOfRegion - region.text.length;
+
+        const rLink = region.formatting?.link;
+        if (region.formatting?.color === FOCUS_COLOUR && rLink) {
+          try {
+            const { color, fontWeight, fontStyle, decoration, strikethrough, link } = JSON.parse(atob(new URL(rLink).hash.substring(1))) as InlineFormatting;
+
+            // Make sure not to run format on other URLs which happen to match the format
+            if (
+              color !== undefined &&
+              fontWeight !== undefined &&
+              fontStyle !== undefined &&
+              decoration !== undefined &&
+              strikethrough !== undefined &&
+              link !== undefined
+            ) {
+              range.formatText(
+                {
+                  index: endOfRegion,
+                  length: region.text.length,
+                },
+                {
+                  color: ERROR_COLOUR,
+                },
+              );
+            }
+          } catch { }
+        }
+      });
+    });
+  };
+
+  // When focusedMatch is undefined, this function clears the focused highlighting
+  const focusOnMatch = async (focusedMatch: LanguageToolMatch | undefined) => {
     try {
       setInProgressTask(Task.FOCUS_MATCH);
       await editContent(
@@ -250,19 +301,27 @@ export const App = () => {
           target: "current_page",
         },
         async (session) => {
-          const itemsMap = prepareMap(session.contents);
+          clearFocusedMatch(session);
 
-          const item = itemsMap[focusedMatch.textId];
-          if (!item) {
-            return;
+          if (focusedMatch) {
+            const itemsMap = prepareMap(session.contents);
+
+            const newID = modifiedRangeIDs.get(focusedMatch.textId);
+            if (!newID) {
+              return;
+            }
+            const item = itemsMap.get(newID);
+            if (!item) {
+              return;
+            }
+
+            const range = item.range;
+
+            range.formatText(
+              { index: focusedMatch.offset, length: focusedMatch.length },
+              { color: FOCUS_COLOUR },
+            );
           }
-
-          const range = item.range;
-
-          range.formatText(
-            { index: focusedMatch.offset, length: focusedMatch.length },
-            { color: '#663399' },
-          );
 
           await session.sync();
         },
@@ -286,22 +345,22 @@ export const App = () => {
   const [matches, setMatches] = useState<LanguageToolMatches>([]);
   const [outdated, setOutdated] = useState(false);
 
+  const [modifiedRangeIDs, setModifiedRangeIDs] = useState(new Map<number, number>);
   const [focusedMatch, setFocusedMatch] = useState<LanguageToolMatch>();
   useEffect(() => {
     (async () => {
-      if (focusedMatch) {
-        await focusOnMatch(focusedMatch);
-      }
+      await focusOnMatch(focusedMatch);
     })();
   }, [focusedMatch])
-  // FIXME: Clear focused match (UI and also on new check spelling)
 
   // Matches disabled by menu item, for context+original+replacements triplet permanently
+  // TEST: On résumé page 2
+  // TODO: Try using original+replacement(s)+length+rule_id_subid
   // FIXME: possibility for overlap, but have to balance with keeping matches disabled when surrounding text/formatting changes
   // FIXME: Won't work if it's near the start of a sentence and context includes textId
   // FIXME: In general won't work with overlapping context, will change and won't be disabled
   // TODO: Store in localStorage
-  const [disabledMatches, setDisabledMatches] = useState(new Map<number, MatchIgnore>());
+  const [disabledMatches, setDisabledMatches] = useState(new Map<number, MatchIgnore>);
 
   return (
     <div className={styles.scrollContainer}>
@@ -326,6 +385,7 @@ export const App = () => {
             : (
               <Suggestions
                 matches={matches}
+                focusedMatch={focusedMatch}
                 setFocusedMatch={setFocusedMatch}
                 inProgressTask={inProgressTask}
                 disabledMatches={disabledMatches}
@@ -362,6 +422,7 @@ export const App = () => {
 export const Suggestions = (props: {
   matches: LanguageToolMatches;
 
+  focusedMatch: LanguageToolMatch | undefined;
   setFocusedMatch: Dispatch<LanguageToolMatch | undefined>;
   inProgressTask: Task | undefined;
 
@@ -382,64 +443,103 @@ export const Suggestions = (props: {
     {/*     defaultChecked={true} */}
     {/*   /> */}
     {/* </Box> */}
-    {props.matches.map((match) => {
-      const { textId, replacements, original } = match;
-
-      const replacement = replacements[0]!.value;
-
-      const id = ignoreID(matchAsIgnore(match));
-      const checked = !props.disabledMatches.has(id);
-
-      return (
-        <Box
-          background="neutralLow"
-          borderRadius="large"
-          padding="1u"
-          key={`${textId}${id}`}
-        >
-          <Box display="inline-flex" alignItems="center" justifyContent="spaceBetween" width="full">
-            <Box width="full">
-              <Checkbox
-                label={
-                  <Text>
-                    <span style={{ ...(!checked) && { textDecoration: "line-through" } }}>
-                      <span style={{ color: "red", fontWeight: "bold" }}>{original}</span>
-                      <span> ➙ </span>
-                      <span style={{ color: "green" }}>{replacement}</span>
-                    </span>
-                  </Text>
-                }
-                checked={checked}
-                onChange={(_, checked) => {
-                  const matchIgnore = matchAsIgnore(match);
-                  const id = ignoreID(matchIgnore);
-
-                  props.setDisabledMatches((prev) => {
-                    if (!checked) {
-                      prev.set(id, matchIgnore);
-                    } else {
-                      prev.delete(id);
-                    }
-
-                    return new Map(prev);
-                  });
-                }}
-              />
-            </Box>
-
-            <Button
-              icon={EyeIcon}
-              size="small"
-              variant="tertiary"
-              onClick={() => props.setFocusedMatch(match)}
-              disabled={props.inProgressTask != null}
-            />
-          </Box>
-        </Box>
-      );
-    })}
+    {props.matches.map((match) => (
+      <Suggestion
+        match={match}
+        focusedMatch={props.focusedMatch}
+        setFocusedMatch={props.setFocusedMatch}
+        inProgressTask={props.inProgressTask}
+        disabledMatches={props.disabledMatches}
+        setDisabledMatches={props.setDisabledMatches}
+      />
+    ))}
   </Rows >
 );
+
+export const Suggestion = (props: {
+  match: LanguageToolMatch;
+
+  focusedMatch: LanguageToolMatch | undefined;
+  setFocusedMatch: Dispatch<LanguageToolMatch | undefined>;
+  inProgressTask: Task | undefined;
+
+  disabledMatches: Map<number, MatchIgnore>,
+  setDisabledMatches: Dispatch<SetStateAction<Map<number, MatchIgnore>>>;
+}) => {
+  // const [expanded, setExpanded] = useState(false);
+
+  const { textId, replacements, original } = props.match;
+
+  const id = ignoreID(matchAsIgnore(props.match));
+  const checked = !props.disabledMatches.has(id);
+
+  return (
+    <Box
+      background="neutralLow"
+      borderRadius="large"
+      padding="1u"
+      key={`${textId}${id}`}
+    >
+      <Box display="inline-flex" alignItems="center" justifyContent="spaceBetween" width="full">
+        <Box width="full">
+          <Checkbox
+            label={
+              <Text>
+                <span style={{ ...(!checked) && { textDecoration: "line-through" } }}>
+                  <span style={{ color: "red", fontWeight: "bold" }}>{original}</span>
+                  {hasReplacment(replacements) && <>
+                    <span> ➙ </span>
+                    <span style={{ color: "green" }}>{replacements[0].value}</span>
+                  </>}
+                </span>
+              </Text>
+            }
+            checked={checked}
+            disabled={!hasReplacment(replacements)}
+            onChange={(_, checked) => {
+              const matchIgnore = matchAsIgnore(props.match);
+              const id = ignoreID(matchIgnore);
+
+              props.setDisabledMatches((prev) => {
+                if (!checked) {
+                  prev.set(id, matchIgnore);
+                } else {
+                  prev.delete(id);
+                }
+
+                return new Map(prev);
+              });
+            }}
+          />
+        </Box>
+
+        <Button
+          icon={EyeIcon}
+          variant={props.focusedMatch === props.match ? "primary" : "secondary"}
+          onClick={() => {
+            if (props.focusedMatch === props.match) {
+              props.setFocusedMatch(undefined);
+            } else {
+              props.setFocusedMatch(props.match);
+            }
+          }}
+          disabled={props.inProgressTask != null}
+        />
+
+        {/* <Button */}
+        {/*   icon={expanded ? ChevronUpIcon : ChevronDownIcon} */}
+        {/*   size="small" */}
+        {/*   variant="tertiary" */}
+        {/*   onClick={() => setExpanded(!expanded)} */}
+        {/* /> */}
+      </Box>
+
+      {/* {expanded && replacements.map((replacement) => ( */}
+      {/*   <Text>{replacement.value}</Text> */}
+      {/* ))} */}
+    </Box>
+  );
+};
 
 type LanguageToolParams = {
   text: string;
@@ -448,28 +548,30 @@ type LanguageToolParams = {
   [key: string]: any;
 };
 
-type LanguageToolResponse = {
-  matches: {
+type LanguageToolResponseMatches = {
+  length: number;
+  offset: number;
+
+  type: {
+    // https://github.com/languagetool-org/languagetool/blob/bd0b8ccdedbe426094049e2ccda5230ce36fc4c4/languagetool-core/src/main/proto/result_cache.proto#L17-L24
+    typeName: "UnknownWord" | "Hint" | "Other";
+  };
+
+  replacements: {
+    value: string;
+  }[];
+
+  context: {
     length: number;
     offset: number;
-
-    type: {
-      // https://github.com/languagetool-org/languagetool/blob/bd0b8ccdedbe426094049e2ccda5230ce36fc4c4/languagetool-core/src/main/proto/result_cache.proto#L17-L24
-      typeName: "UnknownWord" | "Hint" | "Other";
-    };
-
-    replacements: {
-      value: string;
-    }[];
-
-    context: {
-      length: number;
-      offset: number;
-      text: string;
-    };
-  }[];
+    text: string;
+  };
+}[]
+type LanguageToolResponse = {
+  matches: LanguageToolResponseMatches;
+  hiddenMatches?: LanguageToolResponseMatches;
 };
-type LanguageToolMatch = (LanguageToolResponse['matches'][0] & {
+type LanguageToolMatch = (LanguageToolResponseMatches[0] & {
   textId: number;
   original: string;
 });
@@ -504,26 +606,25 @@ function prepare(contents: readonly RichtextContentRange[]): Item[] {
   });
 }
 
-type ItemMap = {
-  [id: number]: Item;
-};
+type ItemMap = Map<number, Item>
 
 function itemsToMap(items: Item[]): ItemMap {
   return items.reduce<ItemMap>((acc, item) => {
-    acc[item.id] = item;
+    acc.set(item.id, item);
     return acc;
-  }, {});
+  }, new Map);
 }
 
 function prepareMap(content: readonly RichtextContentRange[]): ItemMap {
   return itemsToMap(prepare(content));
 }
 
-// FIXME: (proj): Ignore and keep ignored based on context+original+replacements (e.g. on résumé page 2)
-// NOTE: (proj): QB messes up Lists (and not creating list in multiline text), should be fine with self-hosted or other locale
-// NOTE: (proj): Can check HIDDEN rules (check LT premium for example and API response) and implement when found
+// FIXME: (proj): QB messes up Lists (and not creating list in multiline text), should be fine with self-hosted or other locale
 
 // FIXME: (lt): Many adjectives read as nouns (e.g. brilliant) https://github.com/languagetool-org/languagetool/blob/72b75d98aef09185b727a9a82cbcf9d934017ef7/languagetool-language-modules/en/src/main/resources/org/languagetool/resource/en/disambiguation.xml#L2850 DT_JJNN_IN_NN being taken wrongly?
+// FIXME: (lt): <token regexp="yes">important|significant</token>
+// NOTE: (lt): QB (AI-based) rules for en-US on languagetool.org
+// FIXME: (lt): 2022 - Present en-dash
 
 type TextItem = {
   text: string;
@@ -539,7 +640,7 @@ type TextItem = {
 }
 
 // TODO: Allow picking other replacements
-async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
+async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, MatchIgnore[]]> {
   const textItems = items.reduce<TextItem[]>((acc, item) => {
     const { id, plaintext } = item;
 
@@ -576,14 +677,14 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
     enableHiddenRules: true,
     level: "picky",
     noopLanguages: "en",
-    ...(preferredVariants !== "") && { preferredVariants },
+    preferredVariants: preferredVariants || "en-GB", // FIXME:
     abtest: "deggec,esggec,ptggec,qb,gc_1_aggressive,de_gc_1_aggressive,fr_gc_1_aggressive,pt_gc_1_aggressive,nl_gc_1_aggressive,es_gc_1_aggressive",
     preferredLanguages: "en",
     disabledRules: "WHITESPACE_RULE",
     useragent: "standalone",
   }
 
-  let matches: LanguageToolResponse["matches"] = []
+  let matches: LanguageToolResponseMatches = []
 
   const abtloRequest = new Request("https://api.languagetool.org/v2/check", {
     method: "POST",
@@ -595,7 +696,7 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
   });
   const abtloData = await (await fetch(abtloRequest)).text();
   const abtloResponse = JSON.parse(abtloData) as LanguageToolResponse;
-  matches.push(...abtloResponse.matches);
+  matches.push(...abtloResponse.matches, ...(abtloResponse.hiddenMatches || []));
 
   const tloRequest = new Request("https://api.languagetool.org/v2/check", {
     method: "POST",
@@ -606,28 +707,23 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
   });
   const tloData = await (await fetch(tloRequest)).text();
   const tloResponse = JSON.parse(tloData) as LanguageToolResponse;
-  matches.push(...tloResponse.matches);
+  matches.push(...tloResponse.matches, ...(tloResponse.hiddenMatches || []));
 
-  // FIXME: (lt): <token regexp="yes">important|significant</token>
-  // NOTE: (lt): QB (AI-based) rules for en-US on languagetool.org
-  // FIXME: (lt): 2022 - Present en-dash
-
-  // FIXME: If no replacement, still show but don't attempt to fix?
-  matches = matches.filter(({ type: { typeName: type }, replacements }) => type !== "Hint" && replacements.length > 0);
+  matches.push(...digitsMisspelled(text));
 
   // DEBUG
   console.debug(text, textItems);
   console.debug(abtloData, tloData);
   matches.forEach((match) => {
     const { offset, length, type: { typeName: type }, replacements } = match;
-    console.debug(`${type}@${offset}+${length}=${text.substring(offset, offset + length)} -> ${replacements[0]!.value}`);
+    console.debug(`${type}@${offset}+${length}=${text.substring(offset, offset + length)} -> ${replacements[0]?.value || "[]"}`);
   });
   // END DEBUG
 
   // Fix spelling depends on this being reverse sorted
   matches.sort(({ offset: a }, { offset: b }) => b - a);
 
-  return matches.flatMap(({ length, offset, type, replacements, context }) => {
+  const fullMatches: LanguageToolMatches = matches.flatMap(({ length, offset, type, replacements, context }) => {
     const textItem = textItems.find(({ range: { offset: rOffset, length: rLength } }) => {
       return rOffset <= offset && (rOffset + rLength) >= offset + length;
     })!;
@@ -640,7 +736,7 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
 
     offset -= rOffset + plaintextStart;
 
-    if (offset < 0 || replacements.length == 0) {
+    if (offset < 0) {
       return [];
     }
 
@@ -654,4 +750,47 @@ async function spellcheck(items: Item[]): Promise<LanguageToolMatches> {
       original: plaintext.substring(offset, offset + length),
     }];
   });
+
+  // FIXME: Implement
+  // Disabled matches need to not be coloured immediately,
+  // and focusing on them should add proper style preservation
+  const disabled: MatchIgnore[] = []; //fullMatches.filter(({ type: { typeName: type } }) => type === "Hint").map(matchAsIgnore);
+  return [fullMatches.filter(({ type: { typeName: type } }) => type !== "Hint"), disabled];
+}
+
+function digitsMisspelled(text: string): LanguageToolResponseMatches {
+  let matches: LanguageToolResponseMatches = [];
+
+  const regex = /\S+/g;
+  let results;
+  while ((results = regex.exec(text)) !== null) {
+    const result = results[0];
+    const length = result.length;
+    const offset = regex.lastIndex - length;
+
+    if (/[a-zA-Z]/.test(result) && /\d/.test(result)) {
+      matches.push({
+        length,
+        offset,
+        type: {
+          typeName: "UnknownWord",
+        },
+        replacements: [],
+        context: {
+          length,
+          offset,
+          text,
+        }
+      });
+    }
+  }
+
+  return matches;
+}
+
+/**
+  * https://stackoverflow.com/a/56006703
+  */
+function hasReplacment(replacements: LanguageToolMatch['replacements']): replacements is [LanguageToolMatch['replacements'][0], ...LanguageToolMatch['replacements']] {
+  return replacements.length > 0;
 }
