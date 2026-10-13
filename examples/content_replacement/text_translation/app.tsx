@@ -29,7 +29,7 @@ const cyrb53 = function(obj: any, seed = 0): number {
 };
 
 // For usage information, see the README.md file.
-import { Button, Box, Rows, Text, Checkbox, Alert, EyeIcon } from "@canva/app-ui-kit";
+import { Button, Box, Rows, Text, Checkbox, Alert, EyeIcon, CogIcon, TrashIcon, FlagIcon } from "@canva/app-ui-kit";
 import { editContent, InlineFormatting, RichtextContentRange, RichtextContentSession, TextRegion } from "@canva/design";
 import * as styles from "styles/components.css";
 import { Dispatch, SetStateAction, useEffect, useState } from "react";
@@ -39,6 +39,10 @@ const enum Task {
   FIX,
   FOCUS_MATCH,
   UPDATE_HIGHLIGHT,
+}
+
+const enum LocalStorageKey {
+  DISABLED_MATCHES = "disabledMatches",
 }
 
 export const App = () => {
@@ -56,7 +60,7 @@ export const App = () => {
     const [matches, disabled] = await spellcheck(items);
     setMatches(matches);
 
-    const newDisabledMatches = new Set([...disabledMatches, ...disabled]);
+    const newDisabledMatches = new Map([...disabledMatches, ...disabled]);
     setDisabledMatches(newDisabledMatches);
 
     highlightMatches(items, matches, newDisabledMatches);
@@ -67,7 +71,7 @@ export const App = () => {
   };
 
   // Call from inside an `editContent`, and run sync after
-  const highlightMatches = (items: Item[], matches: LanguageToolMatches, disabled: Set<DisabledMatchID>) => {
+  const highlightMatches = (items: Item[], matches: LanguageToolMatches, disabled: Map<DisabledMatchID, LanguageToolMatch>) => {
     const itemsMap = itemsToMap(items);
 
     // ids change when highlighting
@@ -194,7 +198,7 @@ export const App = () => {
 
           await session.sync();
 
-          setModifiedRangeIDs(modifiedRangeIDs.set(textId, cyrb53(range.readTextRegions())));
+          setModifiedRangeIDs(new Map(modifiedRangeIDs.set(textId, cyrb53(range.readTextRegions()))));
         },
       );
       setInProgressTask(undefined);
@@ -341,7 +345,7 @@ export const App = () => {
       }
 
       if (found && textId) {
-        setModifiedRangeIDs(modifiedRangeIDs.set(textId, cyrb53(range.readTextRegions())));
+        setModifiedRangeIDs(new Map(modifiedRangeIDs.set(textId, cyrb53(range.readTextRegions()))));
         return;
       }
     }
@@ -435,8 +439,19 @@ export const App = () => {
   }, [focusedMatch])
 
   // Matches disabled by menu item, identified by some set of keys in the match (see ignoreID for details)
-  // TODO: Store in localStorage
-  const [disabledMatches, setDisabledMatches] = useState(new Set<DisabledMatchID>);
+  const [disabledMatches, setDisabledMatches] = useState(load(LocalStorageKey.DISABLED_MATCHES, Map<DisabledMatchID, LanguageToolMatch>, (v) => new Map(v)));
+  useEffect(() => {
+    store(LocalStorageKey.DISABLED_MATCHES, disabledMatches, (v) => [...v]);
+  }, [disabledMatches]);
+
+  const [settingsVisible, setSettingsVisible] = useState(false);
+  useEffect(() => {
+    if (!settingsVisible) {
+      (async () => {
+        await checkSpelling();
+      })();
+    }
+  }, [settingsVisible])
 
   return (
     <div className={styles.scrollContainer}>
@@ -446,53 +461,119 @@ export const App = () => {
           Please review the new results and press "Fix" again.
         </Alert>}
 
-        <Button
-          variant="secondary"
-          onClick={checkSpelling}
-          disabled={inProgressTask != null}
-          loading={inProgressTask === Task.CHECK_SPELLING}
-        >
-          Check
-        </Button>
-
-        {hasChecked && (
-          matches.length == 0 && inProgressTask == null
-            ? <Alert tone="positive">No mistakes found!</Alert>
-            : (
-              <Suggestions
-                matches={matches}
-                focusedMatch={focusedMatch}
-                setFocusedMatch={setFocusedMatch}
-                inProgressTask={inProgressTask}
-                disabledMatches={disabledMatches}
-                setDisabledMatches={setDisabledMatches}
-                updateHighlightSingleMatch={updateHighlightSingleMatch}
-              />
-            )
-        )}
-
-        <Rows spacing="1u">
-          <Button
-            variant="primary"
-            onClick={fixWithExtendStartFormatting}
-            disabled={inProgressTask != null || matches.length == 0}
-            loading={inProgressTask === Task.FIX}
-          >
-            Fix
-          </Button>
-
-          {matches.length > 0 && (
+        <Box display="inline-flex" alignItems="center" justifyContent="spaceBetween" width="full">
+          <Box width="full">
             <Button
+              stretch={true}
               variant="secondary"
-              onClick={clearResults}
+              onClick={checkSpelling}
               disabled={inProgressTask != null}
+              loading={inProgressTask === Task.CHECK_SPELLING}
             >
-              Clear results
+              Check
             </Button>
-          )}
-        </Rows>
+          </Box>
+
+          <Button
+            icon={CogIcon}
+            size="small"
+            variant="tertiary"
+            onClick={() => setSettingsVisible(!settingsVisible)}
+          />
+        </Box>
+
+        {settingsVisible
+          ? (
+            <Settings
+              disabledMatches={disabledMatches}
+              setDisabledMatches={setDisabledMatches}
+            />
+          ) : (
+            <>
+              {hasChecked && (
+                matches.length == 0 && inProgressTask == null
+                  ? <Alert tone="positive">No mistakes found!</Alert>
+                  : (
+                    <Suggestions
+                      matches={matches}
+                      focusedMatch={focusedMatch}
+                      setFocusedMatch={setFocusedMatch}
+                      inProgressTask={inProgressTask}
+                      disabledMatches={disabledMatches}
+                      setDisabledMatches={setDisabledMatches}
+                      updateHighlightSingleMatch={updateHighlightSingleMatch}
+                    />
+                  )
+              )}
+
+              <Rows spacing="1u">
+                <Button
+                  variant="primary"
+                  onClick={fixWithExtendStartFormatting}
+                  disabled={inProgressTask != null || matches.length == 0}
+                  loading={inProgressTask === Task.FIX}
+                >
+                  Fix
+                </Button>
+
+                {matches.length > 0 && (
+                  <Button
+                    variant="secondary"
+                    onClick={clearResults}
+                    disabled={inProgressTask != null}
+                  >
+                    Clear results
+                  </Button>
+                )}
+              </Rows>
+            </>
+          )
+        }
       </Rows>
     </div>
+  );
+};
+
+export const Settings = (props: {
+  disabledMatches: Map<DisabledMatchID, LanguageToolMatch>,
+  setDisabledMatches: Dispatch<SetStateAction<Map<DisabledMatchID, LanguageToolMatch>>>;
+}) => {
+  const disabledMatches = [...props.disabledMatches].filter(([_, { type: { typeName: type } }]) => type !== "Hint");
+
+  return (
+    <>
+      <Text variant="bold" size="large">Settings</Text>
+
+      <Text variant="bold">Ignored ({disabledMatches.length})</Text>
+
+      {disabledMatches.length > 0 && (
+        <Button
+          variant="secondary"
+          onClick={() => props.setDisabledMatches(new Map)}
+        >
+          Remove all
+        </Button>
+      )}
+
+      {disabledMatches.map(([id, match]) => (
+        <Box display="inline-flex" alignItems="center" justifyContent="spaceBetween" width="full">
+          <Box width="full">
+            <Text>{match.original}</Text>
+          </Box>
+          <Button
+            icon={TrashIcon}
+            variant="secondary"
+            key={id}
+            onClick={() => {
+              props.setDisabledMatches((prev) => {
+                prev.delete(id);
+                return new Map(prev);
+              });
+            }}
+          />
+        </Box>
+      ))}
+    </>
   );
 };
 
@@ -503,39 +584,57 @@ export const Suggestions = (props: {
   setFocusedMatch: Dispatch<LanguageToolMatch | undefined>;
   inProgressTask?: Task;
 
-  disabledMatches: Set<DisabledMatchID>,
-  setDisabledMatches: Dispatch<SetStateAction<Set<DisabledMatchID>>>;
+  disabledMatches: Map<DisabledMatchID, LanguageToolMatch>,
+  setDisabledMatches: Dispatch<SetStateAction<Map<DisabledMatchID, LanguageToolMatch>>>;
 
   updateHighlightSingleMatch: (match: LanguageToolMatch, highlight: boolean) => Promise<void>;
-}) => (
-  <Rows spacing="1u">
-    <Text variant="bold">
-      Suggestions ({props.matches.length})
-    </Text>
-    {/* <Box */}
-    {/*   background="neutralLow" */}
-    {/*   borderRadius="large" */}
-    {/*   padding="1u" */}
-    {/* > */}
-    {/*   <Checkbox */}
-    {/*     label="Select all" */}
-    {/*     defaultChecked={true} */}
-    {/*   /> */}
-    {/* </Box> */}
-    {props.matches.map((match) => (
-      <Suggestion
-        key={`${match.textId}${ignoreID(match)}`}
-        match={match}
-        focusedMatch={props.focusedMatch}
-        setFocusedMatch={props.setFocusedMatch}
-        inProgressTask={props.inProgressTask}
-        disabledMatches={props.disabledMatches}
-        setDisabledMatches={props.setDisabledMatches}
-        updateHighlightSingleMatch={props.updateHighlightSingleMatch}
-      />
-    ))}
-  </Rows >
-);
+}) => {
+  const [onlyEnabled, setOnlyEnabled] = useState(false);
+
+  const matches = onlyEnabled ? props.matches.filter((match) => !props.disabledMatches.has(ignoreID(match))) : props.matches
+
+  return (
+    <Rows spacing="1u">
+      <Box display="inline-flex" alignItems="center" justifyContent="spaceBetween" width="full">
+        <Box width="full">
+          <Text variant="bold">
+            Suggestions ({matches.length})
+          </Text>
+        </Box>
+
+        <Button
+          icon={FlagIcon}
+          variant="tertiary"
+          size="small"
+          pressed={onlyEnabled}
+          onClick={() => setOnlyEnabled(!onlyEnabled)}
+        />
+      </Box>
+      {/* <Box */}
+      {/*   background="neutralLow" */}
+      {/*   borderRadius="large" */}
+      {/*   padding="1u" */}
+      {/* > */}
+      {/*   <Checkbox */}
+      {/*     label="Select all" */}
+      {/*     defaultChecked={true} */}
+      {/*   /> */}
+      {/* </Box> */}
+      {matches.map((match) => (
+        <Suggestion
+          key={`${match.textId}${ignoreID(match)}`}
+          match={match}
+          focusedMatch={props.focusedMatch}
+          setFocusedMatch={props.setFocusedMatch}
+          inProgressTask={props.inProgressTask}
+          disabledMatches={props.disabledMatches}
+          setDisabledMatches={props.setDisabledMatches}
+          updateHighlightSingleMatch={props.updateHighlightSingleMatch}
+        />
+      ))}
+    </Rows >
+  );
+};
 
 export const Suggestion = (props: {
   match: LanguageToolMatch;
@@ -544,8 +643,8 @@ export const Suggestion = (props: {
   setFocusedMatch: Dispatch<LanguageToolMatch | undefined>;
   inProgressTask?: Task;
 
-  disabledMatches: Set<DisabledMatchID>,
-  setDisabledMatches: Dispatch<SetStateAction<Set<DisabledMatchID>>>;
+  disabledMatches: Map<DisabledMatchID, LanguageToolMatch>,
+  setDisabledMatches: Dispatch<SetStateAction<Map<DisabledMatchID, LanguageToolMatch>>>;
 
   updateHighlightSingleMatch: (match: LanguageToolMatch, highlight: boolean) => Promise<void>;
 }) => {
@@ -582,12 +681,12 @@ export const Suggestion = (props: {
 
               props.setDisabledMatches((prev) => {
                 if (!checked) {
-                  prev.add(id);
+                  prev.set(id, props.match);
                 } else {
                   prev.delete(id);
                 }
 
-                return new Set(prev);
+                return new Map(prev);
               });
 
               await props.updateHighlightSingleMatch(props.match, checked);
@@ -676,7 +775,7 @@ function ignoreID(match: LanguageToolMatch): DisabledMatchID {
   */
 
   const { original, replacements, length, rule: { id, subId } } = match;
-  return `${id}${"." + subId || ""}: ${original}[${length}] -> ${replacements.map((r) => r.value).join()}`;
+  return `${id}${subId ? "." + subId : ""}: ${original}[${length}] -> ${replacements.map((r) => r.value).join()}`;
 }
 
 type Item = {
@@ -729,7 +828,7 @@ type TextItem = {
 }
 
 // TODO: Allow picking other replacements
-async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, Set<DisabledMatchID>]> {
+async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, Map<DisabledMatchID, LanguageToolMatch>]> {
   const textItems = items.reduce<TextItem[]>((acc, item) => {
     const { id, plaintext } = item;
 
@@ -766,7 +865,7 @@ async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, Set<Disa
     enableHiddenRules: true,
     level: "picky",
     noopLanguages: "en",
-    preferredVariants: preferredVariants || "en-GB", // FIXME:
+    preferredVariants: preferredVariants || "en-GB", // FIXME: What default, how to disable AI, mobile seems to be en-US
     abtest: "deggec,esggec,ptggec,qb,gc_1_aggressive,de_gc_1_aggressive,fr_gc_1_aggressive,pt_gc_1_aggressive,nl_gc_1_aggressive,es_gc_1_aggressive",
     preferredLanguages: "en",
     disabledRules: "WHITESPACE_RULE",
@@ -843,7 +942,7 @@ async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, Set<Disa
 
   // TODO: Add "enabledHints" to counteract auto disabled
   // TODO: Add to dictionary (either localStorage or shared account storage)
-  const disabled: Set<DisabledMatchID> = new Set(fullMatches.filter(({ type: { typeName: type } }) => type === "Hint").map(ignoreID));
+  const disabled = new Map(fullMatches.filter(({ type: { typeName: type } }) => type === "Hint").map((match) => [ignoreID(match), match]));
   return [fullMatches, disabled];
 }
 
@@ -913,3 +1012,17 @@ function preservationLinkValues(region: TextRegion): { formatting: InlineFormatt
 
   return;
 }
+
+// MARK: - Persistence
+
+function load<T>(key: string, type: new () => T, decode: (value: any) => T): () => T {
+  return () => {
+    const value = localStorage.getItem(key);
+    return value ? decode(JSON.parse(value)) : new type;
+  };
+};
+
+function store<T>(key: string, value: T, encode: (value: T) => any) {
+  const json = JSON.stringify(encode(value));
+  localStorage.setItem(key, json);
+};
