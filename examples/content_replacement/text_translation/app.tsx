@@ -28,11 +28,13 @@ const cyrb53 = function(obj: any, seed = 0): number {
   return 4294967296 * (2097151 & h2) + (h1 >>> 0);
 };
 
-// For usage information, see the README.md file.
-import { Button, Box, Rows, Text, Checkbox, Alert, EyeIcon, CogIcon, TrashIcon, FlagIcon } from "@canva/app-ui-kit";
+import { Button, Box, Rows, Text, Checkbox, Alert, EyeIcon, CogIcon, TrashIcon, FlagIcon, Accordion, AccordionItem, Switch, Link } from "@canva/app-ui-kit";
 import { editContent, InlineFormatting, RichtextContentRange, RichtextContentSession, TextRegion } from "@canva/design";
 import * as styles from "styles/components.css";
 import { Dispatch, SetStateAction, useEffect, useState } from "react";
+import { LocalLinter, WorkerLinter } from "harper.js";
+import { binaryInlined } from "harper.js/binaryInlined";
+import { requestOpenExternalUrl } from "@canva/platform";
 
 const enum Task {
   CHECK_SPELLING,
@@ -43,10 +45,10 @@ const enum Task {
 
 const enum LocalStorageKey {
   DISABLED_MATCHES = "disabledMatches",
+  DIGITS_ARE_MISSPELL = "digitsAreMisspell",
 }
 
 export const App = () => {
-  // This state controls the buttons in the app. It is used to disable them while a translation is in progress.
   const [inProgressTask, setInProgressTask] = useState<Task | undefined>(
     undefined,
   );
@@ -54,7 +56,6 @@ export const App = () => {
   const checkSpellingInner = async (session: RichtextContentSession) => {
     setInProgressTask(Task.CHECK_SPELLING);
 
-    // Extract plaintext from each richtext element, ignoring any formatting like bold, italic, etc.
     const items = prepare(session.contents);
 
     const [matches, disabled] = await spellcheck(items);
@@ -212,7 +213,6 @@ export const App = () => {
       // Ensure running check multiple times preserves original style
       await clearResults();
 
-      // Start a content editing session for all richtext elements on the current page
       await editContent(
         {
           contentType: "richtext",
@@ -464,7 +464,7 @@ export const App = () => {
         <Box display="inline-flex" alignItems="center" justifyContent="spaceBetween" width="full">
           <Box width="full">
             <Button
-              stretch={true}
+              stretch
               variant="secondary"
               onClick={checkSpelling}
               disabled={inProgressTask != null}
@@ -538,41 +538,92 @@ export const Settings = (props: {
   disabledMatches: Map<DisabledMatchID, LanguageToolMatch>,
   setDisabledMatches: Dispatch<SetStateAction<Map<DisabledMatchID, LanguageToolMatch>>>;
 }) => {
+  const [digitsAreMisspell, setDigitsAreMisspell] = useState(() => {
+    const value = localStorage.getItem(LocalStorageKey.DIGITS_ARE_MISSPELL);
+    return value ? JSON.parse(value) : true;
+  });
+  useEffect(() => {
+    store(LocalStorageKey.DIGITS_ARE_MISSPELL, digitsAreMisspell, (v) => v);
+  }, [digitsAreMisspell]);
+
   const disabledMatches = [...props.disabledMatches].filter(([_, { type: { typeName: type } }]) => type !== "Hint");
 
   return (
     <>
       <Text variant="bold" size="large">Settings</Text>
 
-      <Text variant="bold">Ignored ({disabledMatches.length})</Text>
+      <Switch
+        value={digitsAreMisspell}
+        label="Words with numbers are spelling errors"
+        onChange={(value) => setDigitsAreMisspell(value)}
+      />
 
-      {disabledMatches.length > 0 && (
-        <Button
-          variant="secondary"
-          onClick={() => props.setDisabledMatches(new Map)}
+      <Accordion dividers={false}>
+        <AccordionItem title={`Ignored Results (${disabledMatches.length})`}>
+          <Rows spacing="1u">
+            {disabledMatches.length > 0 && (
+              <Button
+                variant="secondary"
+                stretch
+                onClick={() => props.setDisabledMatches(new Map)}
+              >
+                Remove all
+              </Button>
+            )}
+
+            {disabledMatches.map(([id, match]) => (
+              <Box
+                display="inline-flex" alignItems="center" justifyContent="spaceBetween" width="full"
+              >
+                <Box width="full">
+                  <Text>{match.original}</Text>
+                </Box>
+                <Button
+                  icon={TrashIcon}
+                  variant="secondary"
+                  key={id}
+                  onClick={() => {
+                    props.setDisabledMatches((prev) => {
+                      prev.delete(id);
+                      return new Map(prev);
+                    });
+                  }}
+                />
+              </Box>
+            ))}
+          </Rows>
+        </AccordionItem>
+      </Accordion>
+
+      <Text variant="bold" size="large">About</Text>
+
+      <Text tagName="p" size="small">
+        Spelling &amp; Grammar checker by <Link
+          ariaLabel="ktprograms"
+          href="https://ktprograms.codeberg.page/blog/"
+          requestOpenExternalUrl={async () => {
+            await requestOpenExternalUrl({
+              url: "https://ktprograms.codeberg.page/blog/",
+            });
+          }}
         >
-          Remove all
-        </Button>
-      )}
+          ktprograms
+        </Link>
 
-      {disabledMatches.map(([id, match]) => (
-        <Box display="inline-flex" alignItems="center" justifyContent="spaceBetween" width="full">
-          <Box width="full">
-            <Text>{match.original}</Text>
-          </Box>
-          <Button
-            icon={TrashIcon}
-            variant="secondary"
-            key={id}
-            onClick={() => {
-              props.setDisabledMatches((prev) => {
-                prev.delete(id);
-                return new Map(prev);
-              });
-            }}
-          />
-        </Box>
-      ))}
+        <br />
+
+        Uses <Link
+          ariaLabel="LanguageTool"
+          href="https://languagetool.org"
+          requestOpenExternalUrl={async () => {
+            await requestOpenExternalUrl({
+              url: "https://languagetool.org",
+            });
+          }}
+        >
+          LanguageTool
+        </Link> for matches and suggestions.
+      </Text>
     </>
   );
 };
@@ -858,14 +909,14 @@ async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, Map<Disa
   }, []);
 
   const text: string = textItems.map(({ text }) => text).join("");
-  const preferredVariants = navigator.languages.filter((locale) => new Intl.Locale(locale).region !== undefined).join();
+  const preferredVariants = navigator.languages.filter((locale) => new Intl.Locale(locale).region !== undefined).reverse().join();
   const baseParams: LanguageToolParams = {
     text,
     language: "auto",
     enableHiddenRules: true,
     level: "picky",
     noopLanguages: "en",
-    preferredVariants: preferredVariants || "en-GB", // FIXME: What default, how to disable AI, mobile seems to be en-US
+    preferredVariants: preferredVariants || "en-GB",
     abtest: "deggec,esggec,ptggec,qb,gc_1_aggressive,de_gc_1_aggressive,fr_gc_1_aggressive,pt_gc_1_aggressive,nl_gc_1_aggressive,es_gc_1_aggressive",
     preferredLanguages: "en",
     disabledRules: "WHITESPACE_RULE",
@@ -897,7 +948,12 @@ async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, Map<Disa
   const tloResponse = JSON.parse(tloData) as LanguageToolResponse;
   matches.push(...tloResponse.matches, ...(tloResponse.hiddenMatches || []));
 
-  matches.push(...digitsMisspelled(text));
+  const additionalMatches = [...digitsMisspelled(text), ...antAnceEntEnce(text)];
+  for (const additionalMatch of additionalMatches) {
+    if (!matches.find((match) => match.offset === additionalMatch.offset && match.length === additionalMatch.length)) {
+      matches.push(additionalMatch);
+    }
+  }
 
   // DEBUG
   console.debug(text, textItems);
@@ -949,31 +1005,74 @@ async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, Map<Disa
 function digitsMisspelled(text: string): LanguageToolResponseMatches {
   let matches: LanguageToolResponseMatches = [];
 
-  const regex = /\S+/g;
-  let results;
-  while ((results = regex.exec(text)) !== null) {
-    const result = results[0];
-    const length = result.length;
-    const offset = regex.lastIndex - length;
+  const value = localStorage.getItem(LocalStorageKey.DIGITS_ARE_MISSPELL);
+  if (value && JSON.parse(value) === true) {
+    const regex = /\S+/g;
+    let results;
+    while ((results = regex.exec(text)) !== null) {
+      const result = results[0];
+      const length = result.length;
+      const offset = regex.lastIndex - length;
 
-    if (/[a-zA-Z]/.test(result) && /\d/.test(result)) {
-      matches.push({
-        length,
-        offset,
-        type: {
-          typeName: "UnknownWord",
-        },
-        replacements: [],
-        context: {
+      if (/[a-zA-Z]/.test(result) && /\d/.test(result)) {
+        matches.push({
           length,
           offset,
-          text,
-        },
-        rule: {
-          id: "__CUSTOM_NUMBERS_SPELLING_ERROR__",
-        },
-      });
+          type: {
+            typeName: "UnknownWord",
+          },
+          replacements: [],
+          context: {
+            length,
+            offset,
+            text,
+          },
+          rule: {
+            id: "__CUSTOM_NUMBERS_SPELLING_ERROR__",
+          },
+        });
+      }
     }
+  }
+
+  return matches;
+}
+
+function antAnceEntEnce(text: string): LanguageToolResponseMatches {
+  let matches: LanguageToolResponseMatches = [];
+
+  const regex = /(?<before>^|an? |the )(?<result>bouyant|compliant|forbearant|important|reliant|significant|coherent|eloquent|excellent|persistent|reverent|subsistent|urgent) of/gim;
+  let results;
+  while ((results = regex.exec(text)) !== null) {
+    const before = results.groups?.before;
+    const result = results.groups?.result;
+    if (before === undefined || result === undefined) {
+      continue;
+    }
+
+    const length = result.length;
+    const offset = regex.lastIndex - results[0].length + before.length;
+
+    matches.push({
+      length,
+      offset,
+      type: {
+        typeName: "Other",
+      },
+      replacements: [
+        {
+          value: result.replace(/ant$/, "ance").replace(/ent$/, "ence"),
+        },
+      ],
+      context: {
+        length,
+        offset,
+        text,
+      },
+      rule: {
+        id: "__CUSTOM_ARTICLE_ADJECTIVE_OF_5__"
+      }
+    });
   }
 
   return matches;
