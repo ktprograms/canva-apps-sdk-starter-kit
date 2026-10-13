@@ -67,7 +67,7 @@ export const App = () => {
   };
 
   // Call from inside an `editContent`, and run sync after
-  const highlightMatches = (items: Item[], matches: LanguageToolMatches, disabled: Set<number>) => {
+  const highlightMatches = (items: Item[], matches: LanguageToolMatches, disabled: Set<DisabledMatchID>) => {
     const itemsMap = itemsToMap(items);
 
     // ids change when highlighting
@@ -88,8 +88,7 @@ export const App = () => {
       const range = item.range;
 
       let start = range.readPlaintext().length;
-      // PERF: Can stop after passing the match
-      range.readTextRegions().reverse().forEach((region) => {
+      for (const region of range.readTextRegions().reverse()) {
         const rLength = region.text.length;
         start -= rLength;
 
@@ -103,7 +102,7 @@ export const App = () => {
         };
 
         formatRegion(range, length, offset, rLength, start, format);
-      });
+      }
     }
 
     setModifiedRangeIDs(new Map(Array.from(itemsMap, ([id, item]) => [id, cyrb53(item.range.readTextRegions())])));
@@ -162,8 +161,7 @@ export const App = () => {
           const range = item.range;
 
           let start = range.readPlaintext().length;
-          // PERF: Can stop after passing the match
-          range.readTextRegions().reverse().forEach((region) => {
+          for (const region of range.readTextRegions().reverse()) {
             const rLength = region.text.length;
             start -= rLength;
 
@@ -192,7 +190,7 @@ export const App = () => {
                 }
               }
             }
-          });
+          }
 
           await session.sync();
 
@@ -233,24 +231,24 @@ export const App = () => {
         target: "current_page",
       },
       async (session) => {
-        session.contents.forEach((range) => {
-          let endOfRegion = range.readPlaintext().length;
-
-          range.readTextRegions().reverse().forEach((region) => {
-            endOfRegion = endOfRegion - region.text.length;
+        for (const range of session.contents) {
+          let start = range.readPlaintext().length;
+          for (const region of range.readTextRegions().reverse()) {
+            const rLength = region.text.length;
+            start -= rLength;
 
             const values = preservationLinkValues(region);
             if (values) {
               range.formatText(
                 {
-                  index: endOfRegion,
-                  length: region.text.length,
+                  index: start,
+                  length: rLength,
                 },
                 values.formatting,
               );
             }
-          });
-        });
+          }
+        }
 
         await session.sync();
       }
@@ -378,8 +376,7 @@ export const App = () => {
             const range = item.range;
 
             let start = range.readPlaintext().length;
-            // PERF: Can stop after passing the match
-            range.readTextRegions().reverse().forEach((region) => {
+            for (const region of range.readTextRegions().reverse()) {
               const rLength = region.text.length;
               start -= rLength;
 
@@ -400,7 +397,7 @@ export const App = () => {
               };
 
               formatRegion(range, length, offset, rLength, start, format);
-            });
+            }
 
             setModifiedRangeIDs(modifiedRangeIDs.set(textId, cyrb53(range.readTextRegions())));
           }
@@ -439,7 +436,7 @@ export const App = () => {
 
   // Matches disabled by menu item, identified by some set of keys in the match (see ignoreID for details)
   // TODO: Store in localStorage
-  const [disabledMatches, setDisabledMatches] = useState(new Set<number>);
+  const [disabledMatches, setDisabledMatches] = useState(new Set<DisabledMatchID>);
 
   return (
     <div className={styles.scrollContainer}>
@@ -506,8 +503,8 @@ export const Suggestions = (props: {
   setFocusedMatch: Dispatch<LanguageToolMatch | undefined>;
   inProgressTask?: Task;
 
-  disabledMatches: Set<number>,
-  setDisabledMatches: Dispatch<SetStateAction<Set<number>>>;
+  disabledMatches: Set<DisabledMatchID>,
+  setDisabledMatches: Dispatch<SetStateAction<Set<DisabledMatchID>>>;
 
   updateHighlightSingleMatch: (match: LanguageToolMatch, highlight: boolean) => Promise<void>;
 }) => (
@@ -547,8 +544,8 @@ export const Suggestion = (props: {
   setFocusedMatch: Dispatch<LanguageToolMatch | undefined>;
   inProgressTask?: Task;
 
-  disabledMatches: Set<number>,
-  setDisabledMatches: Dispatch<SetStateAction<Set<number>>>;
+  disabledMatches: Set<DisabledMatchID>,
+  setDisabledMatches: Dispatch<SetStateAction<Set<DisabledMatchID>>>;
 
   updateHighlightSingleMatch: (match: LanguageToolMatch, highlight: boolean) => Promise<void>;
 }) => {
@@ -667,7 +664,9 @@ type LanguageToolMatch = (LanguageToolResponseMatches[0] & {
 });
 type LanguageToolMatches = LanguageToolMatch[];
 
-function ignoreID(match: LanguageToolMatch): number {
+type DisabledMatchID = string;
+
+function ignoreID(match: LanguageToolMatch): DisabledMatchID {
   /** Old ID generation method
    * possibility for overlap, but have to balance with keeping matches disabled when surrounding text/formatting changes
    * Won't work if it's near the start of a sentence and context includes textId
@@ -677,7 +676,7 @@ function ignoreID(match: LanguageToolMatch): number {
   */
 
   const { original, replacements, length, rule: { id, subId } } = match;
-  return cyrb53(`${id}${subId || ""}: ${original}[${length}] -> ${replacements.map((r) => r.value).join()}`);
+  return `${id}${"." + subId || ""}: ${original}[${length}] -> ${replacements.map((r) => r.value).join()}`;
 }
 
 type Item = {
@@ -730,7 +729,7 @@ type TextItem = {
 }
 
 // TODO: Allow picking other replacements
-async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, Set<number>]> {
+async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, Set<DisabledMatchID>]> {
   const textItems = items.reduce<TextItem[]>((acc, item) => {
     const { id, plaintext } = item;
 
@@ -844,7 +843,7 @@ async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, Set<numb
 
   // TODO: Add "enabledHints" to counteract auto disabled
   // TODO: Add to dictionary (either localStorage or shared account storage)
-  const disabled: Set<number> = new Set(fullMatches.filter(({ type: { typeName: type } }) => type === "Hint").map(ignoreID));
+  const disabled: Set<DisabledMatchID> = new Set(fullMatches.filter(({ type: { typeName: type } }) => type === "Hint").map(ignoreID));
   return [fullMatches, disabled];
 }
 
