@@ -137,9 +137,6 @@ export const App = () => {
     }
   };
 
-  // NOTE: Occasionally loses sync with actual state,
-  // but in those cases Fix also doesn't work
-  // Which re-checks and syncs modified IDs.
   const updateHighlightSingleMatch = async (match: LanguageToolMatch, highlight: boolean) => {
     try {
       setInProgressTask(Task.UPDATE_HIGHLIGHT);
@@ -182,16 +179,17 @@ export const App = () => {
 
               formatRegion(range, length, offset, rLength, start, format);
             } else {
-              // FIXME: Need to treat individually
-              const values = preservationLinkValues(region);
-              if (values) {
-                range.formatText(
-                  {
-                    index: offset,
-                    length,
-                  },
-                  values.formatting,
-                );
+              if (start >= offset && start + rLength <= offset + length) {
+                const values = preservationLinkValues(region);
+                if (values) {
+                  range.formatText(
+                    {
+                      index: start,
+                      length: rLength,
+                    },
+                    values.formatting,
+                  );
+                }
               }
             }
           });
@@ -315,11 +313,15 @@ export const App = () => {
     }
   };
 
-  const clearFocusedMatch = (session: RichtextContentSession) => {
-    session.contents.forEach((range) => {
+  const clearFocusedMatch = async (session: RichtextContentSession) => {
+    for (const range of session.contents) {
+      const modifiedID = cyrb53(range.readTextRegions());
+      const textId = [...modifiedRangeIDs].find(([_, modified]) => modified === modifiedID)?.[0];
+
       let endOfRegion = range.readPlaintext().length;
 
-      range.readTextRegions().reverse().forEach((region) => {
+      let found;
+      for (const region of range.readTextRegions().reverse()) {
         endOfRegion = endOfRegion - region.text.length;
 
         if (region.formatting?.color === FOCUS_COLOUR) {
@@ -336,9 +338,15 @@ export const App = () => {
               },
             );
           }
+          found = true;
         }
-      });
-    });
+      }
+
+      if (found && textId) {
+        setModifiedRangeIDs(modifiedRangeIDs.set(textId, cyrb53(range.readTextRegions())));
+        return;
+      }
+    }
   };
 
   // When focusedMatch is undefined, this function clears the focused highlighting
@@ -351,7 +359,7 @@ export const App = () => {
           target: "current_page",
         },
         async (session) => {
-          clearFocusedMatch(session);
+          await clearFocusedMatch(session);
 
           if (focusedMatch) {
             const itemsMap = prepareMap(session.contents);
@@ -834,7 +842,7 @@ async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, Set<numb
     }];
   });
 
-  // FIXME: Add "enabledHints" to counteract auto disabled
+  // TODO: Add "enabledHints" to counteract auto disabled
   // TODO: Add to dictionary (either localStorage or shared account storage)
   const disabled: Set<number> = new Set(fullMatches.filter(({ type: { typeName: type } }) => type === "Hint").map(ignoreID));
   return [fullMatches, disabled];
