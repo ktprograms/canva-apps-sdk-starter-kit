@@ -31,10 +31,10 @@ const cyrb53 = function(obj: any, seed = 0): number {
 import { Button, Box, Rows, Text, Checkbox, Alert, EyeIcon, CogIcon, TrashIcon, FlagIcon, Accordion, AccordionItem, Switch, Link } from "@canva/app-ui-kit";
 import { editContent, InlineFormatting, RichtextContentRange, RichtextContentSession, TextRegion } from "@canva/design";
 import * as styles from "styles/components.css";
-import { Dispatch, SetStateAction, useEffect, useState } from "react";
-import { LocalLinter, WorkerLinter } from "harper.js";
-import { binaryInlined } from "harper.js/binaryInlined";
-import { requestOpenExternalUrl } from "@canva/platform";
+import { Dispatch, SetStateAction, useEffect, useRef, useState } from "react";
+import { notification, requestOpenExternalUrl } from "@canva/platform";
+import { CanvaError } from "@canva/error";
+import { useFeatureSupport } from "@canva/app-hooks";
 
 const enum Task {
   CHECK_SPELLING,
@@ -48,14 +48,29 @@ const enum LocalStorageKey {
   DIGITS_ARE_MISSPELL = "digitsAreMisspell",
 }
 
+function handleError(error: unknown) {
+  console.error(error);
+  if (error instanceof CanvaError) {
+    if (error.code !== "rate_limited") {
+      notification.addToast({
+        messageText: error.message,
+      });
+    }
+  } else {
+    notification.addToast({
+      messageText: `An error occurred: ${error}. Please try again.`,
+    });
+  }
+}
+
 export const App = () => {
+  const isSupported = useFeatureSupport();
+
   const [inProgressTask, setInProgressTask] = useState<Task | undefined>(
     undefined,
   );
 
   const checkSpellingInner = async (session: RichtextContentSession) => {
-    setInProgressTask(Task.CHECK_SPELLING);
-
     const items = prepare(session.contents);
 
     const [matches, disabled] = await spellcheck(items);
@@ -67,8 +82,6 @@ export const App = () => {
     highlightMatches(items, matches, newDisabledMatches);
 
     await session.sync();
-
-    setInProgressTask(undefined);
   };
 
   // Call from inside an `editContent`, and run sync after
@@ -142,8 +155,9 @@ export const App = () => {
   };
 
   const updateHighlightSingleMatch = async (match: LanguageToolMatch, highlight: boolean) => {
+    setInProgressTask(Task.UPDATE_HIGHLIGHT);
+
     try {
-      setInProgressTask(Task.UPDATE_HIGHLIGHT);
       await editContent(
         {
           contentType: "richtext",
@@ -202,13 +216,16 @@ export const App = () => {
           setModifiedRangeIDs(new Map(modifiedRangeIDs.set(textId, cyrb53(range.readTextRegions()))));
         },
       );
-      setInProgressTask(undefined);
     } catch (error) {
-      console.error(error);
+      handleError(error);
     }
+
+    setInProgressTask(undefined);
   };
 
   const checkSpelling = async () => {
+    setInProgressTask(Task.CHECK_SPELLING);
+
     try {
       // Ensure running check multiple times preserves original style
       await clearResults();
@@ -224,8 +241,10 @@ export const App = () => {
       );
       setHasChecked(true);
     } catch (error) {
-      console.error(error);
+      handleError(error);
     }
+
+    setInProgressTask(undefined);
   };
 
   const clearFormatting = async () => {
@@ -265,13 +284,14 @@ export const App = () => {
       setHasChecked(false);
       setMatches([]);
     } catch (error) {
-      console.error(error);
+      handleError(error);
     }
   };
 
   const fixWithExtendStartFormatting = async () => {
+    setInProgressTask(Task.FIX);
+
     try {
-      setInProgressTask(Task.FIX);
       await clearFormatting();
       await editContent(
         {
@@ -309,10 +329,11 @@ export const App = () => {
           await checkSpellingInner(session);
         }
       );
-      setInProgressTask(undefined);
     } catch (error) {
-      console.error(error);
+      handleError(error);
     }
+
+    setInProgressTask(undefined);
   };
 
   const clearFocusedMatch = async (session: RichtextContentSession) => {
@@ -353,8 +374,9 @@ export const App = () => {
 
   // When focusedMatch is undefined, this function clears the focused highlighting
   const focusOnMatch = async (focusedMatch?: LanguageToolMatch) => {
+    setInProgressTask(Task.FOCUS_MATCH);
+
     try {
-      setInProgressTask(Task.FOCUS_MATCH);
       await editContent(
         {
           contentType: "richtext",
@@ -409,11 +431,20 @@ export const App = () => {
           await session.sync();
         },
       );
-      setInProgressTask(undefined);
     } catch (error) {
-      console.error(error);
+      handleError(error);
     }
+
+    setInProgressTask(undefined);
   };
+
+  const hasRendered = (() => {
+    const ref = useRef(false);
+    useEffect(() => {
+      ref.current = true;
+    }, [])
+    return ref.current;
+  })();
 
   useEffect(() => {
     const interval = setInterval(async () => {
@@ -433,12 +464,15 @@ export const App = () => {
   const [modifiedRangeIDs, setModifiedRangeIDs] = useState(new Map<number, number>);
   const [focusedMatch, setFocusedMatch] = useState<LanguageToolMatch>();
   useEffect(() => {
-    (async () => {
-      await focusOnMatch(focusedMatch);
-    })();
+    if (hasRendered) {
+      (async () => {
+        await focusOnMatch(focusedMatch);
+      })();
+    }
   }, [focusedMatch])
 
   // Matches disabled by menu item, identified by some set of keys in the match (see ignoreID for details)
+  // TODO: Consider making this a hook (usePersistedState)
   const [disabledMatches, setDisabledMatches] = useState(load(LocalStorageKey.DISABLED_MATCHES, Map<DisabledMatchID, LanguageToolMatch>, (v) => new Map(v)));
   useEffect(() => {
     store(LocalStorageKey.DISABLED_MATCHES, disabledMatches, (v) => [...v]);
@@ -446,77 +480,83 @@ export const App = () => {
 
   const [settingsVisible, setSettingsVisible] = useState(false);
   useEffect(() => {
-    if (!settingsVisible) {
-      (async () => {
-        await checkSpelling();
-      })();
+    if (hasRendered) {
+      if (!settingsVisible) {
+        (async () => {
+          await checkSpelling();
+        })();
+      }
     }
   }, [settingsVisible])
 
-  return (
-    <div className={styles.scrollContainer}>
-      <Rows spacing="2u">
-        {outdated && <Alert tone="critical">
-          Content has changed since the last spellcheck.
-          Please review the new results and press "Fix" again.
-        </Alert>}
+  return !isSupported(editContent)
+    ? (
+      <div className={styles.scrollContainer}>
+        <Text size="large">Canva Docs doesn't support the features required for this app to work.</Text>
+      </div>
+    ) : (
+      <div className={styles.scrollContainer}>
+        <Rows spacing="2u">
+          {outdated && <Alert tone="critical">
+            Content has changed since the last spellcheck.
+            Please review the new results and press "Fix" again.
+          </Alert>}
 
-        <Box display="inline-flex" alignItems="center" justifyContent="spaceBetween" width="full">
-          <Box width="full">
+          <Box display="inline-flex" alignItems="center" justifyContent="spaceBetween" width="full">
+            <Box width="full">
+              <Button
+                stretch
+                variant="secondary"
+                onClick={checkSpelling}
+                disabled={inProgressTask != null}
+                loading={inProgressTask === Task.CHECK_SPELLING}
+              >
+                Check
+              </Button>
+            </Box>
+
             <Button
-              stretch
-              variant="secondary"
-              onClick={checkSpelling}
-              disabled={inProgressTask != null}
-              loading={inProgressTask === Task.CHECK_SPELLING}
-            >
-              Check
-            </Button>
+              icon={CogIcon}
+              size="small"
+              variant="tertiary"
+              onClick={() => setSettingsVisible(!settingsVisible)}
+            />
           </Box>
 
-          <Button
-            icon={CogIcon}
-            size="small"
-            variant="tertiary"
-            onClick={() => setSettingsVisible(!settingsVisible)}
-          />
-        </Box>
+          {settingsVisible
+            ? (
+              <Settings
+                disabledMatches={disabledMatches}
+                setDisabledMatches={setDisabledMatches}
+              />
+            ) : (
+              <>
+                {hasChecked && (
+                  matches.length == 0 && inProgressTask == null
+                    ? <Alert tone="positive">No mistakes found!</Alert>
+                    : (
+                      <Suggestions
+                        matches={matches}
+                        focusedMatch={focusedMatch}
+                        setFocusedMatch={setFocusedMatch}
+                        inProgressTask={inProgressTask}
+                        disabledMatches={disabledMatches}
+                        setDisabledMatches={setDisabledMatches}
+                        updateHighlightSingleMatch={updateHighlightSingleMatch}
+                      />
+                    )
+                )}
 
-        {settingsVisible
-          ? (
-            <Settings
-              disabledMatches={disabledMatches}
-              setDisabledMatches={setDisabledMatches}
-            />
-          ) : (
-            <>
-              {hasChecked && (
-                matches.length == 0 && inProgressTask == null
-                  ? <Alert tone="positive">No mistakes found!</Alert>
-                  : (
-                    <Suggestions
-                      matches={matches}
-                      focusedMatch={focusedMatch}
-                      setFocusedMatch={setFocusedMatch}
-                      inProgressTask={inProgressTask}
-                      disabledMatches={disabledMatches}
-                      setDisabledMatches={setDisabledMatches}
-                      updateHighlightSingleMatch={updateHighlightSingleMatch}
-                    />
-                  )
-              )}
+                <Rows spacing="1u">
+                  <Button
+                    variant="primary"
+                    onClick={fixWithExtendStartFormatting}
+                    disabled={inProgressTask != null || matches.length == 0}
+                    loading={inProgressTask === Task.FIX}
+                  >
+                    Fix
+                  </Button>
 
-              <Rows spacing="1u">
-                <Button
-                  variant="primary"
-                  onClick={fixWithExtendStartFormatting}
-                  disabled={inProgressTask != null || matches.length == 0}
-                  loading={inProgressTask === Task.FIX}
-                >
-                  Fix
-                </Button>
-
-                {matches.length > 0 && (
                   <Button
                     variant="secondary"
                     onClick={clearResults}
@@ -524,14 +564,13 @@ export const App = () => {
                   >
                     Clear results
                   </Button>
-                )}
-              </Rows>
-            </>
-          )
-        }
-      </Rows>
-    </div>
-  );
+                </Rows>
+              </>
+            )
+          }
+        </Rows>
+      </div>
+    );
 };
 
 export const Settings = (props: {
