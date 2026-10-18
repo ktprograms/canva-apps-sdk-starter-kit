@@ -21,6 +21,7 @@ export default [
       // formatjs guidelines. If more examples are localized, this list should be
       // updated:
       "examples/localization/**/*",
+      "examples/content_replacement/text_translation/**/*",
     ],
     ...canvaPlugin.configs.apps_i18n,
   },

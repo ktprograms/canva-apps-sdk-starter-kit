@@ -12,6 +12,7 @@ const FOCUS_COLOUR = "#999900";
 */
 // Object key order may change across JSON.stringify calls.
 // When consistency is required, use a stable method such as string formatting.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const cyrb53 = function(obj: any, seed = 0): number {
   const str = JSON.stringify(obj);
 
@@ -28,13 +29,16 @@ const cyrb53 = function(obj: any, seed = 0): number {
   return 4294967296 * (2097151 & h2) + (h1 >>> 0);
 };
 
-import { Button, Box, Rows, Text, Checkbox, Alert, EyeIcon, CogIcon, TrashIcon, FlagIcon, Accordion, AccordionItem, Switch, Link } from "@canva/app-ui-kit";
-import { editContent, InlineFormatting, RichtextContentRange, RichtextContentSession, TextRegion } from "@canva/design";
+import { Button, Box, Rows, Text, Checkbox, Alert, EyeIcon, CogIcon, TrashIcon, FlagIcon, Accordion, AccordionItem, Switch } from "@canva/app-ui-kit";
+import type { InlineFormatting, RichtextContentRange, RichtextContentSession, TextRegion } from "@canva/design";
+import { editContent } from "@canva/design";
 import * as styles from "styles/components.css";
-import { Dispatch, SetStateAction, useEffect, useRef, useState } from "react";
-import { notification, requestOpenExternalUrl } from "@canva/platform";
+import type { Dispatch, SetStateAction } from "react";
+import { useEffect, useRef, useState } from "react";
+import { notification } from "@canva/platform";
 import { CanvaError } from "@canva/error";
 import { useFeatureSupport } from "@canva/app-hooks";
+import { FormattedMessage, useIntl } from "react-intl";
 
 const enum Task {
   CHECK_SPELLING,
@@ -48,10 +52,10 @@ const enum LocalStorageKey {
   DIGITS_ARE_MISSPELL = "digitsAreMisspell",
 }
 
-function handleError(error: unknown) {
-  console.error(error);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function handleError(error: any) {
   if (error instanceof CanvaError) {
-    if (error.code !== "rate_limited") {
+    if (error.code !== "rate_limited" && error.message !== "[not_allowed]:  Operation is not allowed when app is suspended.") {
       notification.addToast({
         messageText: error.message,
       });
@@ -64,6 +68,7 @@ function handleError(error: unknown) {
 }
 
 export const App = () => {
+  const intl = useIntl();
   const isSupported = useFeatureSupport();
 
   const [inProgressTask, setInProgressTask] = useState<Task | undefined>(
@@ -168,7 +173,7 @@ export const App = () => {
 
           const { length, offset, textId } = match;
 
-          let newID = modifiedRangeIDs.get(textId);
+          const newID = modifiedRangeIDs.get(textId);
           if (!newID) {
             return;
           }
@@ -448,7 +453,7 @@ export const App = () => {
 
   useEffect(() => {
     const interval = setInterval(async () => {
-      if (inProgressTask === null) {
+      if (inProgressTask == null) {
         await checkSpelling();
       }
     }, AUTO_CHECK_INTERVAL);
@@ -492,14 +497,21 @@ export const App = () => {
   return !isSupported(editContent)
     ? (
       <div className={styles.scrollContainer}>
-        <Text size="large">Canva Docs doesn't support the features required for this app to work.</Text>
+        <Text size="large">
+          <FormattedMessage
+            description="Text to explain that this app won't work in Canva Docs (documents), due to a feature not being available."
+            defaultMessage="Canva Docs doesn't support the features required for this app to work."
+          />
+        </Text>
       </div>
     ) : (
       <div className={styles.scrollContainer}>
         <Rows spacing="2u">
           {outdated && <Alert tone="critical">
-            Content has changed since the last spellcheck.
-            Please review the new results and press "Fix" again.
+            <FormattedMessage
+              description='Alert message indicating that the spellcheck results have changed, and need to be reviewed before pressing "Fix" again.'
+              defaultMessage='Content has changed since the last spellcheck. Please review the new results and press "Fix" again.'
+            />
           </Alert>}
 
           <Box display="inline-flex" alignItems="center" justifyContent="spaceBetween" width="full">
@@ -507,16 +519,29 @@ export const App = () => {
               <Button
                 stretch
                 variant="secondary"
-                onClick={checkSpelling}
+                onClick={() => {
+                  if (settingsVisible) {
+                    setSettingsVisible(false); // Will run check spelling in effect
+                  } else {
+                    checkSpelling();
+                  }
+                }}
                 disabled={inProgressTask != null}
                 loading={inProgressTask === Task.CHECK_SPELLING}
               >
-                Check
+                {intl.formatMessage({
+                  description: "This is the label on a button to check the design content for mistakes. It is a verb.",
+                  defaultMessage: "Check",
+                })}
               </Button>
             </Box>
 
             <Button
               icon={CogIcon}
+              ariaLabel={intl.formatMessage({
+                description: "Screenreader text for a button. When pressed, the button will toggle visiblity of the Settings page. It is a verb.",
+                defaultMessage: "Show/Hide Settings",
+              })}
               size="small"
               variant="tertiary"
               onClick={() => setSettingsVisible(!settingsVisible)}
@@ -532,9 +557,15 @@ export const App = () => {
             ) : (
               <>
                 {hasChecked && (
-                  matches.length == 0 && inProgressTask == null
-                    ? <Alert tone="positive">No mistakes found!</Alert>
-                    : (
+                  matches.length === 0 && inProgressTask == null
+                    ? (
+                      <Alert tone="positive">
+                        <FormattedMessage
+                          description="Alert message shown when a spellcheck returns no mistakes."
+                          defaultMessage="No mistakes found!"
+                        />
+                      </Alert>
+                    ) : (
                       <Suggestions
                         matches={matches}
                         focusedMatch={focusedMatch}
@@ -551,10 +582,13 @@ export const App = () => {
                   <Button
                     variant="primary"
                     onClick={fixWithExtendStartFormatting}
-                    disabled={inProgressTask != null || matches.length == 0}
+                    disabled={inProgressTask != null || matches.length === 0}
                     loading={inProgressTask === Task.FIX}
                   >
-                    Fix
+                    {intl.formatMessage({
+                      description: "This is the label on a button to apply all selected corrections to the design. It is a verb.",
+                      defaultMessage: "Fix",
+                    })}
                   </Button>
 
                   <Button
@@ -562,7 +596,10 @@ export const App = () => {
                     onClick={clearResults}
                     disabled={inProgressTask != null}
                   >
-                    Clear results
+                    {intl.formatMessage({
+                      description: "This is the label on a button to clear all results from the results list (and also remove error highlighting in the design). It is a verb.",
+                      defaultMessage: "Clear results",
+                    })}
                   </Button>
                 </Rows>
               </>
@@ -577,6 +614,8 @@ export const Settings = (props: {
   disabledMatches: Map<DisabledMatchID, LanguageToolMatch>,
   setDisabledMatches: Dispatch<SetStateAction<Map<DisabledMatchID, LanguageToolMatch>>>;
 }) => {
+  const intl = useIntl();
+
   const [digitsAreMisspell, setDigitsAreMisspell] = useState(() => {
     const value = localStorage.getItem(LocalStorageKey.DIGITS_ARE_MISSPELL);
     return value ? JSON.parse(value) : true;
@@ -589,16 +628,31 @@ export const Settings = (props: {
 
   return (
     <>
-      <Text variant="bold" size="large">Settings</Text>
+      <Text variant="bold" size="large">
+        <FormattedMessage
+          description="This is the name of the settings section. It is a noun."
+          defaultMessage="Settings"
+        />
+      </Text>
 
       <Switch
         value={digitsAreMisspell}
-        label="Words with numbers are spelling errors"
+        label={intl.formatMessage({
+          description: "This is the name of a setting. It is used to choose whether words containing digits (such as \"d0gs\") are marked as spelling errors.",
+          defaultMessage: "Words with numbers are spelling errors",
+        })}
         onChange={(value) => setDigitsAreMisspell(value)}
       />
 
       <Accordion dividers={false}>
-        <AccordionItem title={`Ignored Results (${disabledMatches.length})`}>
+        <AccordionItem
+          title={intl.formatMessage({
+            description: "This is the header of the Ignored Results section. It includes the number of ignored results, which is either 0 or a positive integer.",
+            defaultMessage: "Ignored Results ({disabledMatchesCount, number})",
+          }, {
+            disabledMatchesCount: disabledMatches.length,
+          })}
+        >
           <Rows spacing="1u">
             {disabledMatches.length > 0 && (
               <Button
@@ -606,19 +660,27 @@ export const Settings = (props: {
                 stretch
                 onClick={() => props.setDisabledMatches(new Map)}
               >
-                Remove all
+                {intl.formatMessage({
+                  description: "This is the label on a button to remove all ignored results. It is a verb.",
+                  defaultMessage: "Remove all",
+                })}
               </Button>
             )}
 
             {disabledMatches.map(([id, match]) => (
               <Box
                 display="inline-flex" alignItems="center" justifyContent="spaceBetween" width="full"
+                key={id}
               >
                 <Box width="full">
                   <Text>{match.original}</Text>
                 </Box>
                 <Button
                   icon={TrashIcon}
+                  ariaLabel={intl.formatMessage({
+                    description: "Screenreader text for a button. When pressed, the button will remove this specific ignored result. It is a verb.",
+                    defaultMessage: "Remove",
+                  })}
                   variant="secondary"
                   key={id}
                   onClick={() => {
@@ -633,36 +695,6 @@ export const Settings = (props: {
           </Rows>
         </AccordionItem>
       </Accordion>
-
-      <Text variant="bold" size="large">About</Text>
-
-      <Text tagName="p" size="small">
-        Spelling &amp; Grammar checker by <Link
-          ariaLabel="ktprograms"
-          href="https://ktprograms.codeberg.page/blog/"
-          requestOpenExternalUrl={async () => {
-            await requestOpenExternalUrl({
-              url: "https://ktprograms.codeberg.page/blog/",
-            });
-          }}
-        >
-          ktprograms
-        </Link>
-
-        <br />
-
-        Uses <Link
-          ariaLabel="LanguageTool"
-          href="https://languagetool.org"
-          requestOpenExternalUrl={async () => {
-            await requestOpenExternalUrl({
-              url: "https://languagetool.org",
-            });
-          }}
-        >
-          LanguageTool
-        </Link> for matches and suggestions.
-      </Text>
     </>
   );
 };
@@ -679,6 +711,8 @@ export const Suggestions = (props: {
 
   updateHighlightSingleMatch: (match: LanguageToolMatch, highlight: boolean) => Promise<void>;
 }) => {
+  const intl = useIntl();
+
   const [onlyEnabled, setOnlyEnabled] = useState(false);
 
   const matches = onlyEnabled ? props.matches.filter((match) => !props.disabledMatches.has(ignoreID(match))) : props.matches
@@ -688,12 +722,25 @@ export const Suggestions = (props: {
       <Box display="inline-flex" alignItems="center" justifyContent="spaceBetween" width="full">
         <Box width="full">
           <Text variant="bold">
-            Suggestions ({matches.length})
+            <FormattedMessage
+              description="This is the header of the suggestions section. It includes the number of suggestions which is either 0 or a positive integer."
+              defaultMessage="Suggestions ({matchesCount, number})"
+              values={{
+                matchesCount: matches.length,
+              }}
+            />
           </Text>
         </Box>
 
         <Button
           icon={FlagIcon}
+          ariaLabel={onlyEnabled ? intl.formatMessage({
+            description: "Screenreader text for a button. When pressed, the app will enable showing all suggestions (including ignored). It is a verb.",
+            defaultMessage: "Show all suggestions",
+          }) : intl.formatMessage({
+            description: "Screenreader text for a button. When pressed, the app will disable showing all suggestions (only those not ignored will be shown). It is a verb.",
+            defaultMessage: "Filter (Only show enabled suggestions)",
+          })}
           variant="tertiary"
           size="small"
           pressed={onlyEnabled}
@@ -738,6 +785,8 @@ export const Suggestion = (props: {
 
   updateHighlightSingleMatch: (match: LanguageToolMatch, highlight: boolean) => Promise<void>;
 }) => {
+  const intl = useIntl();
+
   // const [expanded, setExpanded] = useState(false);
 
   const { replacements, original, type: { typeName } } = props.match;
@@ -758,7 +807,12 @@ export const Suggestion = (props: {
                 <span style={{ ...(!checked) && { textDecoration: "line-through" } }}>
                   <span style={{ color: typeName === "Hint" ? HINT_COLOUR : ERROR_COLOUR, fontWeight: "bold" }}>{original}</span>
                   {hasReplacment(replacements) && <>
-                    <span> ➙ </span>
+                    <span>
+                      <FormattedMessage
+                        description="This is an arrow indicating the change to be made for a suggestion. It points in the direction of writing (i.e. to the right in English)."
+                        defaultMessage=" ➙ "
+                      />
+                    </span>
                     <span style={{ color: "green" }}>{replacements[0].value}</span>
                   </>}
                 </span>
@@ -786,6 +840,10 @@ export const Suggestion = (props: {
 
         <Button
           icon={EyeIcon}
+          ariaLabel={intl.formatMessage({
+            description: "Screenreader text for a button. When pressed, the button will toggle highlighting this suggestion in the design (with a different colour from other suggestions). It is a verb.",
+            defaultMessage: "Highlight/Unhighlight this suggestion in the design",
+          })}
           variant={props.focusedMatch === props.match ? "primary" : "secondary"}
           onClick={() => {
             if (props.focusedMatch === props.match) {
@@ -816,6 +874,7 @@ type LanguageToolParams = {
   text: string;
   language: "auto" | string;
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 };
 
@@ -902,7 +961,7 @@ function prepareMap(content: readonly RichtextContentRange[]): ItemMap {
 // FIXME: (lt): Many adjectives read as nouns (e.g. brilliant) https://github.com/languagetool-org/languagetool/blob/72b75d98aef09185b727a9a82cbcf9d934017ef7/languagetool-language-modules/en/src/main/resources/org/languagetool/resource/en/disambiguation.xml#L2850 DT_JJNN_IN_NN being taken wrongly?
 // FIXME: (lt): <token regexp="yes">important|significant</token>
 // NOTE: (lt): QB (AI-based) rules for en-US on languagetool.org
-// FIXME: (lt): 2022 - Present en-dash
+// FIXME: (lt): 2022 - Present en-dash
 
 type TextItem = {
   text: string;
@@ -962,7 +1021,7 @@ async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, Map<Disa
     useragent: "standalone",
   }
 
-  let matches: LanguageToolResponseMatches = []
+  const matches: LanguageToolResponseMatches = []
 
   const abtloRequest = new Request("https://api.languagetool.org/v2/check", {
     method: "POST",
@@ -995,12 +1054,12 @@ async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, Map<Disa
   }
 
   // DEBUG
-  console.debug(text, textItems);
-  console.debug(abtloData, tloData);
-  matches.forEach((match) => {
-    const { offset, length, type: { typeName: type }, replacements } = match;
-    console.debug(`${type}@${offset}+${length}=${text.substring(offset, offset + length)} -> ${replacements[0]?.value || "[]"}`);
-  });
+  // console.debug(text, textItems);
+  // console.debug(abtloData, tloData);
+  // matches.forEach((match) => {
+  //   const { offset, length, type: { typeName: type }, replacements } = match;
+  //   console.debug(`${type}@${offset}+${length}=${text.substring(offset, offset + length)} -> ${replacements[0]?.value || "[]"}`);
+  // });
   // END DEBUG
 
   // Fix spelling depends on this being reverse sorted
@@ -1009,7 +1068,7 @@ async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, Map<Disa
   const fullMatches: LanguageToolMatches = matches.flatMap(({ length, offset, type, replacements, context, rule }) => {
     const textItem = textItems.find(({ range: { offset: rOffset, length: rLength } }) => {
       return rOffset <= offset && (rOffset + rLength) >= offset + length;
-    })!;
+    });
 
     if (!textItem) {
       return [];
@@ -1042,13 +1101,13 @@ async function spellcheck(items: Item[]): Promise<[LanguageToolMatches, Map<Disa
 }
 
 function digitsMisspelled(text: string): LanguageToolResponseMatches {
-  let matches: LanguageToolResponseMatches = [];
+  const matches: LanguageToolResponseMatches = [];
 
   const value = localStorage.getItem(LocalStorageKey.DIGITS_ARE_MISSPELL);
   if (value && JSON.parse(value) === true) {
     const regex = /\S+/g;
     let results;
-    while ((results = regex.exec(text)) !== null) {
+    while ((results = regex.exec(text)) != null) {
       const result = results[0];
       const length = result.length;
       const offset = regex.lastIndex - length;
@@ -1078,11 +1137,11 @@ function digitsMisspelled(text: string): LanguageToolResponseMatches {
 }
 
 function antAnceEntEnce(text: string): LanguageToolResponseMatches {
-  let matches: LanguageToolResponseMatches = [];
+  const matches: LanguageToolResponseMatches = [];
 
   const regex = /(?<before>^|an? |the )(?<result>bouyant|compliant|forbearant|important|reliant|significant|coherent|eloquent|excellent|persistent|reverent|subsistent|urgent) of/gim;
   let results;
-  while ((results = regex.exec(text)) !== null) {
+  while ((results = regex.exec(text)) != null) {
     const before = results.groups?.before;
     const result = results.groups?.result;
     if (before === undefined || result === undefined) {
@@ -1145,7 +1204,9 @@ function preservationLinkValues(region: TextRegion): { formatting: InlineFormatt
           wasPlain: wasPlain || false,
         };
       }
-    } catch { }
+    } catch {
+      return;
+    }
   }
 
   return;
@@ -1153,6 +1214,7 @@ function preservationLinkValues(region: TextRegion): { formatting: InlineFormatt
 
 // MARK: - Persistence
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function load<T>(key: string, type: new () => T, decode: (value: any) => T): () => T {
   return () => {
     const value = localStorage.getItem(key);
@@ -1160,6 +1222,7 @@ function load<T>(key: string, type: new () => T, decode: (value: any) => T): () 
   };
 };
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function store<T>(key: string, value: T, encode: (value: T) => any) {
   const json = JSON.stringify(encode(value));
   localStorage.setItem(key, json);
